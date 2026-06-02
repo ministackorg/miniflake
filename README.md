@@ -1,5 +1,7 @@
 # MiniFlake
 
+##Under construction
+
 A local Snowflake emulator powered by DuckDB. Drop-in replacement for development and testing.
 
 ## Quick Start
