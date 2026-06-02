@@ -1,0 +1,31 @@
+# Binaries
+miniflake
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build
+/bin/
+/dist/
+
+# Test
+*.test
+*.out
+coverage.html
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.db
+*.duckdb
+/data/
+/stages/

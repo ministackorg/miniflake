@@ -1,0 +1,13 @@
+services:
+  miniflake:
+    image: miniflakedb/miniflake:latest
+    build: .
+    ports:
+      - "8084:8084"
+    volumes:
+      - miniflake-data:/data
+      - miniflake-stages:/stages
+
+volumes:
+  miniflake-data:
+  miniflake-stages:
