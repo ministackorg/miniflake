@@ -6,7 +6,7 @@ A local Snowflake emulator powered by DuckDB. Drop-in replacement for developmen
 
 **Docker:**
 ```bash
-docker run -p 8084:8084 miniflakedb/miniflake
+docker run -p 8084:8084 ministackorg/miniflake
 ```
 
 **Binary:**
