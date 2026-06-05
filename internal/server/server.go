@@ -6,11 +6,17 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/miniflakedb/miniflake/internal/orchestrator"
 	"github.com/miniflakedb/miniflake/internal/session"
 )
+
+// sessionIDCounter avoids collisions on concurrent logins. Snowflake clients
+// dedupe sessions by SessionID; a time.UnixMilli()%100k value (the prior
+// derivation) collides under load.
+var sessionIDCounter uint64
 
 // QueryEngine is the interface the server uses to execute SQL. It matches the
 // signatures of internal/engine.Engine so that package never needs to be
@@ -249,6 +255,26 @@ func cellToString(v interface{}) string {
 	}
 }
 
+// buildRowSet converts engine rows into the Snowflake-wire-format rowset.
+// Per the Snowflake HTTP JSON protocol, every non-null cell is emitted as a
+// string (cellToString does the per-type formatting); nulls flow through as
+// JSON null so the gosnowflake driver hits its IsNull path correctly.
+func buildRowSet(rows [][]interface{}) [][]interface{} {
+	out := make([][]interface{}, len(rows))
+	for i, row := range rows {
+		outRow := make([]interface{}, len(row))
+		for j, cell := range row {
+			if cell == nil {
+				outRow[j] = nil
+				continue
+			}
+			outRow[j] = cellToString(cell)
+		}
+		out[i] = outRow
+	}
+	return out
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -276,7 +302,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, loginResponseData{
 		Token:               sess.Token,
 		MasterToken:         sess.ID, // use session ID as master token
-		SessionID:           time.Now().UnixMilli() % 100000,
+		SessionID:           int64(atomic.AddUint64(&sessionIDCounter, 1)),
 		MasterValidityInSec: 14400,
 		DisplayUserName:     strings.ToUpper(body.Data.LoginName),
 	})
@@ -299,7 +325,7 @@ func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	successResponse(w, loginResponseData{
 		Token:               sess.Token,
 		MasterToken:         sess.ID,
-		SessionID:           time.Now().UnixMilli() % 100000,
+		SessionID:           int64(atomic.AddUint64(&sessionIDCounter, 1)),
 		MasterValidityInSec: 14400,
 		DisplayUserName:     strings.ToUpper(sess.User),
 	})
@@ -361,7 +387,15 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 
 	// If orchestrator is wired, route through it.
 	if s.orchestrator != nil {
-		sess, _ := s.sessionMgr.GetSession(token)
+		// A non-empty token that doesn't resolve = invalid/expired session.
+		// Reject rather than silently falling through to a temp session
+		// (which would let an attacker query without re-authenticating).
+		// An empty token is allowed and creates a temp session below.
+		sess, ok := s.sessionMgr.GetSession(token)
+		if !ok && token != "" {
+			errorResponse(w, http.StatusUnauthorized, "390100", "session token is invalid")
+			return
+		}
 		if sess == nil {
 			// Create a temporary session for unauthenticated queries.
 			sess = &session.Session{

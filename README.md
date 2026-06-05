@@ -1,8 +1,8 @@
 # MiniFlake
 
-## Under construction
+A local Snowflake emulator powered by DuckDB. Drop-in replacement for development and testing of code that targets Snowflake.
 
-A local Snowflake emulator powered by DuckDB. Drop-in replacement for development and testing.
+**Status:** in active development. The query path (login → SQL → fetch → session lifecycle) works end-to-end through the gosnowflake driver, the Python connector, and JDBC. The Snowflake-specific feature matrix below uses three markers: `✅` exercised by integration tests, `🟡` building block exists but not wired end-to-end, `🚧` planned.
 
 ## Quick Start
 
@@ -62,33 +62,36 @@ jdbc:snowflake://localhost:8084/?account=miniflake&user=test&password=test&proto
 
 | Category | Feature | Status |
 |---|---|---|
-| **SQL Core** | SELECT, JOIN, subqueries | :white_check_mark: |
-| | Aggregations, window functions | :white_check_mark: |
-| | CTEs, UNION, INTERSECT, EXCEPT | :white_check_mark: |
-| | QUALIFY clause | :white_check_mark: |
-| | LATERAL FLATTEN | :white_check_mark: |
-| **DDL/DML** | CREATE/DROP TABLE, VIEW, SCHEMA, DATABASE | :white_check_mark: |
-| | INSERT, UPDATE, DELETE, MERGE | :white_check_mark: |
-| | CREATE TABLE AS SELECT | :white_check_mark: |
-| | COPY INTO | :white_check_mark: |
-| **Semi-structured** | VARIANT, OBJECT, ARRAY types | :white_check_mark: |
-| | Dot notation, bracket notation | :white_check_mark: |
-| | PARSE_JSON, OBJECT_CONSTRUCT, ARRAY_AGG | :white_check_mark: |
-| **Stages** | Internal named stages | :white_check_mark: |
-| | PUT / GET commands | :white_check_mark: |
-| | Stage file listing (LS) | :white_check_mark: |
-| **Streams & Tasks** | Table streams (CDC) | :construction: |
-| | Task scheduling | :construction: |
-| **Time Travel** | AT / BEFORE queries | :construction: |
-| | UNDROP | :construction: |
-| **Cloning** | Zero-copy clone | :construction: |
-| **UDFs** | SQL UDFs | :white_check_mark: |
-| | JavaScript UDFs | :construction: |
-| **RBAC** | Roles, grants (parsed, not enforced) | :white_check_mark: |
-| **Snowpipe** | REST API ingest | :construction: |
-| **Information Schema** | TABLES, COLUMNS, SCHEMATA views | :white_check_mark: |
+| **SQL Core** | SELECT, JOIN, subqueries | ✅ |
+| | Aggregations, window functions | ✅ |
+| | CTEs, UNION, INTERSECT, EXCEPT | ✅ |
+| | QUALIFY clause | 🟡 |
+| | LATERAL FLATTEN | 🟡 |
+| **DDL/DML** | CREATE/DROP TABLE, VIEW, SCHEMA, DATABASE | ✅ |
+| | INSERT, UPDATE, DELETE | ✅ |
+| | MERGE | 🚧 |
+| | CREATE TABLE AS SELECT | 🟡 |
+| | COPY INTO | 🟡 |
+| **Semi-structured** | VARIANT, OBJECT, ARRAY types | ✅ |
+| | Dot notation, bracket notation | ✅ |
+| | PARSE_JSON, OBJECT_CONSTRUCT, ARRAY_AGG | ✅ |
+| **Stages** | Internal named stages (CREATE/DROP STAGE) | ✅ |
+| | PUT / GET commands | 🟡 |
+| | Stage file listing (LS) | 🟡 |
+| **Streams & Tasks** | Table streams (CDC) | 🟡 |
+| | Task scheduling | 🟡 |
+| **Time Travel** | AT / BEFORE queries | 🚧 |
+| | UNDROP | 🚧 |
+| **Cloning** | Table / Schema / Database clone (CTAS-backed) | 🟡 |
+| | Zero-copy snapshots | 🚧 |
+| **UDFs** | SQL UDFs | ✅ |
+| | Python UDFs | 🟡 |
+| | JavaScript UDFs | 🚧 |
+| **RBAC** | Roles, grants (parsed, not enforced) | ✅ |
+| **Snowpipe** | REST API ingest | 🚧 |
+| **Information Schema** | TABLES, COLUMNS, SCHEMATA views | ✅ |
 
-:white_check_mark: Implemented | :construction: Planned
+✅ Exercised by integration tests | 🟡 Implementation exists but not wired end-to-end | 🚧 Planned
 
 ## Architecture
 
@@ -126,12 +129,21 @@ Client (gosnowflake / Python / JDBC)
 
 ## Development
 
+Requires Go 1.26+ (DuckDB binding is built via cgo, so a C toolchain is needed too — `build-essential` on Debian/Ubuntu, Xcode CLT on macOS).
+
 ```bash
-make build        # Build binary
-make test         # Run tests
-make docker       # Build Docker image
-make lint         # Run linter
+make build              # Build binary at ./bin/miniflake
+make test               # Unit tests with race detector
+make test-integration   # Integration tests (gosnowflake → in-process server)
+make docker             # Build Docker image
+make fmt                # gofmt + go vet
 ```
+
+CI runs the same targets on every push and PR via `.github/workflows/test.yml`. The `docker.yml` workflow builds the image (no push from PRs) and smoke-tests `/health`.
+
+### Contributing
+
+PRs welcome. For features that flip a 🟡 → ✅: add an integration test in `test/integration/` that exercises the feature through the gosnowflake driver before changing the README marker.
 
 ## License
 

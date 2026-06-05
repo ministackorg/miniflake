@@ -11,6 +11,7 @@ import (
 
 	"github.com/miniflakedb/miniflake/internal/catalog"
 	"github.com/miniflakedb/miniflake/internal/clone"
+	"github.com/miniflakedb/miniflake/internal/copyinto"
 	"github.com/miniflakedb/miniflake/internal/engine"
 	"github.com/miniflakedb/miniflake/internal/rbac"
 	"github.com/miniflakedb/miniflake/internal/rewriter"
@@ -154,12 +155,47 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 		return o.handleUse(ctx, sess, kind, name)
 	}
 
-	// COPY INTO
+	// COPY INTO — route to the copyinto executor. The marker captures the
+	// original Snowflake-shape statement (the rewriter wraps it in
+	// MINIFLAKE_COPY_INTO so DuckDB doesn't see it); we parse + execute here.
 	if m := reMarkerCopyInto.FindStringSubmatch(sql); m != nil {
-		// For now, return a stub acknowledging the COPY INTO.
+		originalSQL := strings.TrimSpace(m[1])
+		direction, tableName, stagePath, format, options, perr := copyinto.ParseCopyStatement(originalSQL)
+		if perr != nil {
+			return nil, true, fmt.Errorf("COPY INTO: %w", perr)
+		}
+		exec := copyinto.NewExecutor(
+			o.engine.ExecNoResult,
+			o.engine.Execute,
+			o.stageMgr,
+		)
+		var results []copyinto.CopyResult
+		var execErr error
+		switch direction {
+		case copyinto.LoadIntoTable:
+			results, execErr = exec.ExecuteLoad(ctx, tableName, stagePath, format, options)
+		case copyinto.UnloadToStage:
+			results, execErr = exec.ExecuteUnload(ctx, tableName, stagePath, format, options)
+		default:
+			return nil, true, fmt.Errorf("COPY INTO: unknown direction")
+		}
+		if execErr != nil {
+			return nil, true, execErr
+		}
+		// Snowflake's COPY INTO returns one row per file with status columns.
+		rows := make([][]interface{}, 0, len(results))
+		for _, r := range results {
+			rows = append(rows, []interface{}{
+				r.File, r.Status, r.RowsLoaded, r.RowsParsed,
+				r.ErrorsSeen, r.FirstError,
+			})
+		}
 		return &QueryResult{
-			Columns:       []string{"status"},
-			Rows:          [][]interface{}{{"Copy statement acknowledged (stub)"}},
+			Columns: []string{
+				"file", "status", "rows_loaded", "rows_parsed",
+				"errors_seen", "first_error",
+			},
+			Rows:          rows,
 			StatementType: "COPY",
 		}, true, nil
 	}
