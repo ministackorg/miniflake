@@ -1,5 +1,6 @@
-# Binaries
-miniflake
+# Binaries — anchor the bare name so it only matches the built binary at
+# the project root, not the `cmd/miniflake/` source directory.
+/miniflake
 *.exe
 *.dll
 *.so
