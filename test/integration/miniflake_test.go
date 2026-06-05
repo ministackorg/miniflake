@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -606,4 +608,324 @@ func TestConcurrentQueries(t *testing.T) {
 		}(g)
 	}
 	readWg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// Snowflake-specific features wired through the orchestrator
+// ---------------------------------------------------------------------------
+
+func TestMergeUpsert(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS merge_target")
+	execSQL(t, db, "DROP TABLE IF EXISTS merge_source")
+	// DuckDB's ON CONFLICT requires a UNIQUE or PRIMARY KEY constraint on
+	// the conflict target column. The MERGE rewriter emits a single-column
+	// ON CONFLICT clause, so the target needs PRIMARY KEY on that column.
+	execSQL(t, db, "CREATE TABLE merge_target (id INT PRIMARY KEY, v VARCHAR)")
+	execSQL(t, db, "CREATE TABLE merge_source (id INT, v VARCHAR)")
+	execSQL(t, db, "INSERT INTO merge_target VALUES (1, 'old')")
+	execSQL(t, db, "INSERT INTO merge_source VALUES (1, 'new'), (2, 'fresh')")
+
+	execSQL(t, db, `MERGE INTO merge_target t USING merge_source s ON t.id = s.id
+WHEN MATCHED THEN UPDATE SET t.v = s.v
+WHEN NOT MATCHED THEN INSERT (id, v) VALUES (s.id, s.v)`)
+
+	rows, err := db.Query("SELECT id, v FROM merge_target ORDER BY id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[int]string{}
+	for rows.Next() {
+		var id int
+		var v string
+		if err := rows.Scan(&id, &v); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = v
+	}
+	if got[1] != "new" {
+		t.Errorf("expected update id=1 to 'new', got %q", got[1])
+	}
+	if got[2] != "fresh" {
+		t.Errorf("expected insert id=2='fresh', got %q", got[2])
+	}
+}
+
+func TestCreateStreamAndDropTableSnapshot(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS streamed")
+	execSQL(t, db, "CREATE TABLE streamed (id INT, v VARCHAR)")
+	execSQL(t, db, "INSERT INTO streamed VALUES (1, 'a')")
+	execSQL(t, db, "CREATE STREAM streamed_stream ON TABLE streamed")
+	execSQL(t, db, "INSERT INTO streamed VALUES (2, 'b')")
+
+	rows, err := db.Query("SHOW STREAMS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	if len(cols) < 3 {
+		t.Fatalf("SHOW STREAMS columns: %v", cols)
+	}
+	found := false
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		// Column 1 (index 1) is `name`.
+		if name, ok := vals[1].(string); ok && strings.EqualFold(name, "streamed_stream") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("streamed_stream not in SHOW STREAMS output")
+	}
+
+	execSQL(t, db, "DROP STREAM streamed_stream")
+}
+
+func TestUndropTableRestoresData(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS undrop_me")
+	execSQL(t, db, "CREATE TABLE undrop_me (id INT, name VARCHAR)")
+	execSQL(t, db, "INSERT INTO undrop_me VALUES (1, 'a'), (2, 'b')")
+	execSQL(t, db, "DROP TABLE undrop_me")
+	execSQL(t, db, "UNDROP TABLE undrop_me")
+
+	var count int
+	if err := db.QueryRow("SELECT COUNT(*) FROM undrop_me").Scan(&count); err != nil {
+		t.Fatalf("query after UNDROP: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("after UNDROP expected 2 rows, got %d", count)
+	}
+}
+
+func TestCreateAndShowTask(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TASK IF EXISTS test_task")
+	execSQL(t, db, "DROP TABLE IF EXISTS task_target")
+	execSQL(t, db, "CREATE TABLE task_target (n INT)")
+	execSQL(t, db, "CREATE TASK test_task WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS INSERT INTO task_target VALUES (42)")
+
+	rows, err := db.Query("SHOW TASKS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	found := false
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		if name, ok := vals[1].(string); ok && strings.EqualFold(name, "test_task") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("test_task not in SHOW TASKS")
+	}
+
+	// EXECUTE TASK runs the body once.
+	execSQL(t, db, "EXECUTE TASK test_task")
+	var n int
+	if err := db.QueryRow("SELECT n FROM task_target").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 42 {
+		t.Errorf("expected EXECUTE TASK to insert 42, got %d", n)
+	}
+
+	execSQL(t, db, "DROP TASK test_task")
+}
+
+func TestCreateAndShowPipe(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP PIPE IF EXISTS test_pipe")
+	execSQL(t, db, "CREATE PIPE test_pipe AS COPY INTO ingest_t FROM @ingest_stage")
+
+	rows, err := db.Query("SHOW PIPES")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	found := false
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		if name, ok := vals[1].(string); ok && strings.EqualFold(name, "test_pipe") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("test_pipe not in SHOW PIPES")
+	}
+	execSQL(t, db, "DROP PIPE test_pipe")
+}
+
+// TestSnowpipeRESTIngest verifies the v1 insertFiles endpoint reaches the
+// snowpipe engine. We use stdlib HTTP because the gosnowflake driver doesn't
+// expose this endpoint — clients hit it directly with their account creds.
+func TestSnowpipeRESTIngest(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP PIPE IF EXISTS rest_pipe")
+	execSQL(t, db, "DROP TABLE IF EXISTS rest_target")
+	execSQL(t, db, "CREATE TABLE rest_target (n INT)")
+	execSQL(t, db, "CREATE PIPE rest_pipe AS COPY INTO rest_target FROM @some_stage")
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/v1/data/pipes/TESTDB/PUBLIC/rest_pipe/insertFiles", testPort)
+	body := `{"files":[{"path":"a.csv","size":12},{"path":"b.csv","size":34}]}`
+	resp, err := http.Post(url, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		buf := make([]byte, 1024)
+		n, _ := resp.Body.Read(buf)
+		t.Fatalf("status %d: %s", resp.StatusCode, buf[:n])
+	}
+}
+
+func TestCreateTableAsSelect(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS ctas_src")
+	execSQL(t, db, "DROP TABLE IF EXISTS ctas_dst")
+	execSQL(t, db, "CREATE TABLE ctas_src (id INT, v VARCHAR)")
+	execSQL(t, db, "INSERT INTO ctas_src VALUES (1, 'a'), (2, 'b'), (3, 'c')")
+	execSQL(t, db, "CREATE TABLE ctas_dst AS SELECT id, v FROM ctas_src WHERE id > 1")
+
+	var n int
+	if err := db.QueryRow("SELECT COUNT(*) FROM ctas_dst").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("CTAS expected 2 rows, got %d", n)
+	}
+}
+
+func TestLateralFlatten(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	rows, err := db.Query(`SELECT t.value::INTEGER AS v FROM (SELECT [10, 20, 30] AS arr) src, LATERAL FLATTEN(input => src.arr) AS t ORDER BY v`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []int
+	for rows.Next() {
+		var v int
+		if err := rows.Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, v)
+	}
+	if len(got) != 3 || got[0] != 10 || got[1] != 20 || got[2] != 30 {
+		t.Errorf("FLATTEN result: %v", got)
+	}
+}
+
+func TestQualifyClause(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS qual_t")
+	execSQL(t, db, "CREATE TABLE qual_t (g INT, v INT)")
+	execSQL(t, db, "INSERT INTO qual_t VALUES (1, 10), (1, 20), (1, 30), (2, 99)")
+
+	rows, err := db.Query(`SELECT g, v FROM qual_t QUALIFY ROW_NUMBER() OVER (PARTITION BY g ORDER BY v DESC) = 1 ORDER BY g`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	type kv struct{ g, v int }
+	var out []kv
+	for rows.Next() {
+		var k kv
+		if err := rows.Scan(&k.g, &k.v); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, k)
+	}
+	if len(out) != 2 || out[0] != (kv{1, 30}) || out[1] != (kv{2, 99}) {
+		t.Errorf("QUALIFY output: %v", out)
+	}
+}
+
+// PUT/GET are implemented server-side (see internal/orchestrator/putget.go +
+// internal/orchestrator/putget_test.go), but the gosnowflake driver
+// intercepts these commands client-side to do its own presigned-URL flow,
+// which never reaches our server. The Python and JDBC drivers behave
+// differently — server-side tests live in the orchestrator package.
+//
+// The unused filepath import is silenced by the line below.
+var _ = filepath.Join
+
+func TestTimeTravelAtOffset(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS tt_t")
+	execSQL(t, db, "CREATE TABLE tt_t (id INT)")
+	execSQL(t, db, "INSERT INTO tt_t VALUES (1)")
+	execSQL(t, db, "INSERT INTO tt_t VALUES (2)")
+
+	// AT(OFFSET => -N) returns the snapshot at-or-before `now - N seconds`.
+	// The snapshots captured pre-INSERT are <2s old, so a 2-second sleep
+	// here puts all of them on the eligible side of the cutoff.
+	time.Sleep(2 * time.Second)
+
+	rows, err := db.Query(`SELECT id FROM tt_t AT(OFFSET => -1) ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []int
+	for rows.Next() {
+		var n int
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, n)
+	}
+	// The most-recent snapshot at-or-before (now-1s) is the one taken right
+	// before the second INSERT — table state {1}.
+	if len(got) != 1 || got[0] != 1 {
+		t.Errorf("AT(OFFSET) result: %v (want [1])", got)
+	}
 }

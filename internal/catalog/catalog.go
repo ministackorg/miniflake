@@ -354,11 +354,11 @@ func (c *Catalog) ShowDatabases() [][]interface{} {
 		rows = append(rows, []interface{}{
 			db.CreatedAt.Format(time.RFC3339),
 			db.Name,
-			"N",  // is_default
-			"N",  // is_current
+			"N", // is_default
+			"N", // is_current
 			db.Owner,
-			"",   // comment
-			"",   // options
+			"",              // comment
+			"",              // options
 			len(db.Schemas), // retention_time (placeholder: schema count)
 		})
 	}

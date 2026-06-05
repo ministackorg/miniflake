@@ -40,7 +40,7 @@ type TagInfo struct {
 type Manager struct {
 	mu          sync.RWMutex
 	tags        map[string]*Tag            // key: DB.SCHEMA.TAG_NAME
-	assignments map[string][]TagAssignment  // key: object identifier
+	assignments map[string][]TagAssignment // key: object identifier
 }
 
 func tagKey(db, schema, name string) string {

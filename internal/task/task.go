@@ -25,7 +25,7 @@ type Task struct {
 	DatabaseName string
 	SchemaName   string
 	SQLText      string
-	Schedule     string    // CRON expression or "N MINUTE"
+	Schedule     string // CRON expression or "N MINUTE"
 	Warehouse    string
 	State        TaskState
 	Predecessor  string // for DAG chains (AFTER task_name)
@@ -304,8 +304,8 @@ func (s *Scheduler) runSuccessors(ctx context.Context, db, schema, predecessorNa
 	for _, t := range s.tasks {
 		t.mu.Lock()
 		isSuccessor := t.State == TaskStarted &&
-			strings.ToLower(t.DatabaseName) == strings.ToLower(db) &&
-			strings.ToLower(t.SchemaName) == strings.ToLower(schema) &&
+			strings.EqualFold(t.DatabaseName, db) &&
+			strings.EqualFold(t.SchemaName, schema) &&
 			strings.ToLower(t.Predecessor) == predLower
 		t.mu.Unlock()
 		if isSuccessor {
@@ -413,18 +413,25 @@ func ParseSchedule(schedule string) (*ScheduleInterval, error) {
 	return nil, fmt.Errorf("unrecognized schedule format: %q", schedule)
 }
 
-// nextRunTime computes the next run time based on the schedule and the current time.
+// nextRunTime computes the next run time based on the schedule and the current
+// time. Returns now+1min for unparseable schedules so a malformed expression
+// doesn't stall the scheduler — the task's run will likely error, surfacing
+// the misconfiguration without taking the loop down.
 func nextRunTime(schedule string, now time.Time) time.Time {
 	si, err := ParseSchedule(schedule)
 	if err != nil {
-		// Fallback: 1 minute from now.
 		return now.Add(1 * time.Minute)
 	}
 	if si.Minutes > 0 {
 		return now.Add(time.Duration(si.Minutes) * time.Minute)
 	}
-	// For cron, use a simple 1-minute fallback. A full cron parser
-	// would be needed for production; this keeps dependencies minimal.
+	if si.Cron != "" {
+		next, err := nextCronTime(si.Cron, now)
+		if err != nil {
+			return now.Add(1 * time.Minute)
+		}
+		return next
+	}
 	return now.Add(1 * time.Minute)
 }
 
@@ -437,17 +444,16 @@ func (s *Scheduler) GetDependencyOrder(db, schema string) []string {
 	dbLower := strings.ToLower(db)
 	schemaLower := strings.ToLower(schema)
 
-	// Build adjacency: predecessor -> []successor
+	// Build adjacency: predecessor -> []successor. inDegree doubles as the
+	// node set for Kahn's algorithm, so we don't need a separate allNames.
 	adj := make(map[string][]string)
 	inDegree := make(map[string]int)
-	var allNames []string
 
 	for _, t := range s.tasks {
 		if strings.ToLower(t.DatabaseName) != dbLower || strings.ToLower(t.SchemaName) != schemaLower {
 			continue
 		}
 		nameLower := strings.ToLower(t.Name)
-		allNames = append(allNames, nameLower)
 		if _, ok := inDegree[nameLower]; !ok {
 			inDegree[nameLower] = 0
 		}

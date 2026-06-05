@@ -51,8 +51,8 @@ type PipeInfo struct {
 // Engine manages Snowpipe operations.
 type Engine struct {
 	mu      sync.RWMutex
-	pipes   map[string]*Pipe         // key: DB.SCHEMA.PIPE_NAME
-	history map[string][]FileStatus  // key: pipe key
+	pipes   map[string]*Pipe        // key: DB.SCHEMA.PIPE_NAME
+	history map[string][]FileStatus // key: pipe key
 	execFn  func(ctx context.Context, sql string) error
 }
 

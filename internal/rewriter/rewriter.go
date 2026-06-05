@@ -20,6 +20,12 @@ func init() {
 		rewriteUseStatements,
 		rewritePutGet,
 		rewriteCopyInto,
+		rewriteStreams,
+		rewriteTasks,
+		rewritePipes,
+		rewriteUndrop,
+		rewriteTimeTravel,
+		rewriteMerge,
 		rewriteShowCommands,
 		rewriteDescribe,
 		rewriteIdentifierFunc,
@@ -335,8 +341,11 @@ var reFlattenTable = regexp.MustCompile(`(?i)TABLE\s*\(\s*FLATTEN\s*\(\s*(?:inpu
 var reLateralFlatten = regexp.MustCompile(`(?i),?\s*LATERAL\s+FLATTEN\s*\(\s*(?:input\s*=>\s*)?([^)]+)\)\s+(?:AS\s+)?(\w+)`)
 
 func rewriteFlatten(sql string) string {
-	sql = reFlattenTable.ReplaceAllString(sql, "unnest($1)")
-	sql = reLateralFlatten.ReplaceAllString(sql, ", LATERAL unnest($1) AS $2")
+	// Snowflake's FLATTEN returns the columns (seq, key, path, index, value, this).
+	// DuckDB's unnest returns a single column named "unnest". Alias the unnest
+	// result as <alias>(value) so the common `<alias>.value` projection works.
+	sql = reFlattenTable.ReplaceAllString(sql, "unnest($1) AS flat(value)")
+	sql = reLateralFlatten.ReplaceAllString(sql, ", LATERAL (SELECT unnest AS value FROM unnest($1)) AS $2")
 	return sql
 }
 

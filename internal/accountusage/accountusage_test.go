@@ -10,16 +10,16 @@ func TestRecordAndGetQueryHistory(t *testing.T) {
 
 	now := time.Now()
 	s.RecordQuery(QueryHistory{
-		QueryID:       "q1",
-		QueryText:     "SELECT 1",
-		DatabaseName:  "DB1",
-		SchemaName:    "PUBLIC",
-		UserName:      "ADMIN",
-		Status:        "SUCCESS",
-		StartTime:     now,
-		EndTime:       now.Add(10 * time.Millisecond),
-		BytesScanned:  1024,
-		RowsProduced:  1,
+		QueryID:         "q1",
+		QueryText:       "SELECT 1",
+		DatabaseName:    "DB1",
+		SchemaName:      "PUBLIC",
+		UserName:        "ADMIN",
+		Status:          "SUCCESS",
+		StartTime:       now,
+		EndTime:         now.Add(10 * time.Millisecond),
+		BytesScanned:    1024,
+		RowsProduced:    1,
 		ExecutionTimeMs: 10,
 	})
 	s.RecordQuery(QueryHistory{

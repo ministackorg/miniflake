@@ -71,9 +71,11 @@ func (e *Engine) CaptureSnapshot(db, schema, table string, querier Querier) erro
 	filename := fmt.Sprintf("%d.parquet", now.UnixNano())
 	filePath := filepath.Join(dir, filename)
 
-	// Export table to Parquet using DuckDB's COPY.
-	qualifiedTable := fmt.Sprintf("\"%s\".\"%s\".\"%s\"", db, schema, table)
-	query := fmt.Sprintf("COPY %s TO '%s' (FORMAT PARQUET)", qualifiedTable, filePath)
+	// Export table to Parquet using DuckDB's COPY. DuckDB resolves the
+	// table via the engine's current schema (set by SetCurrentSchema after
+	// USE SCHEMA), so an unqualified name is what works here — the
+	// Snowflake-style db/schema only key the snapshot directory.
+	query := fmt.Sprintf("COPY \"%s\" TO '%s' (FORMAT PARQUET)", table, filePath)
 	_, _, err := querier.Execute(context.Background(), query)
 	if err != nil {
 		return fmt.Errorf("timetravel: export snapshot: %w", err)

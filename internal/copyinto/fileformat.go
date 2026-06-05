@@ -15,7 +15,7 @@ func DefaultCSV() FileFormat {
 		SkipHeader:                 0,
 		DateFormat:                 "AUTO",
 		TimestampFormat:            "AUTO",
-		NullIf:                    []string{"\\N"},
+		NullIf:                     []string{"\\N"},
 		TrimSpace:                  false,
 		ErrorOnColumnCountMismatch: true,
 		StripOuterArray:            false,
@@ -44,34 +44,49 @@ func DefaultParquet() FileFormat {
 }
 
 // ParseFileFormatOptions parses a map of option key-value pairs into a FileFormat.
-// Keys are case-insensitive.
+// Keys are case-insensitive. TYPE is resolved first so the format-specific
+// defaults are in place before any other option overrides them — go's map
+// iteration order is random, so processing TYPE inside the main loop loses
+// previously-set options like SKIP_HEADER when TYPE happens to come last.
 func ParseFileFormatOptions(options map[string]string) FileFormat {
 	// Start with CSV defaults; the TYPE option will override.
 	ff := DefaultCSV()
 
+	// Pass 1: locate TYPE (case-insensitive lookup, no allocations of a
+	// normalized-key map) and seed the FileFormat with the matching defaults.
+	for k, v := range options {
+		if !strings.EqualFold(strings.TrimSpace(k), "TYPE") {
+			continue
+		}
+		val := strings.Trim(strings.TrimSpace(v), "'\"")
+		switch strings.ToUpper(val) {
+		case "CSV":
+			ff = DefaultCSV()
+		case "JSON":
+			ff = DefaultJSON()
+		case "PARQUET":
+			ff = DefaultParquet()
+		case "AVRO":
+			ff.Type = "AVRO"
+		case "ORC":
+			ff.Type = "ORC"
+		default:
+			ff.Type = strings.ToUpper(val)
+		}
+		break
+	}
+
+	// Pass 2: apply every non-TYPE option on top of the seeded defaults.
 	for k, v := range options {
 		key := strings.ToUpper(strings.TrimSpace(k))
+		if key == "TYPE" {
+			continue
+		}
 		val := strings.TrimSpace(v)
 		// Strip surrounding quotes if present.
 		val = strings.Trim(val, "'\"")
 
 		switch key {
-		case "TYPE":
-			upper := strings.ToUpper(val)
-			switch upper {
-			case "CSV":
-				ff = DefaultCSV()
-			case "JSON":
-				ff = DefaultJSON()
-			case "PARQUET":
-				ff = DefaultParquet()
-			case "AVRO":
-				ff.Type = "AVRO"
-			case "ORC":
-				ff.Type = "ORC"
-			default:
-				ff.Type = upper
-			}
 		case "COMPRESSION":
 			ff.Compression = strings.ToUpper(val)
 		case "FIELD_DELIMITER":
@@ -97,17 +112,10 @@ func ParseFileFormatOptions(options map[string]string) FileFormat {
 		}
 	}
 
-	// Re-apply the TYPE if it was set (the loop order is not guaranteed).
-	if t, ok := options["TYPE"]; ok {
-		ff.Type = strings.ToUpper(strings.Trim(strings.TrimSpace(t), "'\""))
-	} else if t, ok := options["type"]; ok {
-		ff.Type = strings.ToUpper(strings.Trim(strings.TrimSpace(t), "'\""))
-	}
-
 	return ff
 }
 
-// parseNullIf parses a NULL_IF value like ('', 'NULL') into a string slice.
+// parseNullIf parses a NULL_IF value like (”, 'NULL') into a string slice.
 func parseNullIf(val string) []string {
 	val = strings.TrimSpace(val)
 	val = strings.TrimPrefix(val, "(")

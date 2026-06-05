@@ -71,6 +71,9 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 	mux.HandleFunc("/telemetry/send", s.handleTelemetry)
 	mux.HandleFunc("/session/heartbeat", s.handleHeartbeat)
 
+	// Snowpipe REST ingest.
+	mux.HandleFunc("/v1/data/pipes/", s.handleSnowpipeIngest)
+
 	// Internal.
 	mux.HandleFunc("/_miniflake/health", s.handleHealth)
 
@@ -115,11 +118,11 @@ type loginRequestBody struct {
 }
 
 type loginResponseData struct {
-	Token                  string `json:"token"`
-	MasterToken            string `json:"masterToken"`
-	SessionID              int64  `json:"sessionId"`
-	MasterValidityInSec    int    `json:"masterValidityInSeconds"`
-	DisplayUserName        string `json:"displayUserName"`
+	Token               string `json:"token"`
+	MasterToken         string `json:"masterToken"`
+	SessionID           int64  `json:"sessionId"`
+	MasterValidityInSec int    `json:"masterValidityInSeconds"`
+	DisplayUserName     string `json:"displayUserName"`
 }
 
 type queryRequestBody struct {
@@ -136,14 +139,14 @@ type rowTypeField struct {
 }
 
 type queryResponseData struct {
-	QueryID           string           `json:"queryId"`
-	SQLText           string           `json:"sqlText"`
-	QueryResultFormat string           `json:"queryResultFormat"`
-	RowType           []rowTypeField   `json:"rowtype"`
-	RowSet            [][]interface{}  `json:"rowset"`
-	Total             int              `json:"total"`
-	Returned          int              `json:"returned"`
-	QueryStatus       string           `json:"queryStatus"`
+	QueryID           string          `json:"queryId"`
+	SQLText           string          `json:"sqlText"`
+	QueryResultFormat string          `json:"queryResultFormat"`
+	RowType           []rowTypeField  `json:"rowtype"`
+	RowSet            [][]interface{} `json:"rowset"`
+	Total             int             `json:"total"`
+	Returned          int             `json:"returned"`
+	QueryStatus       string          `json:"queryStatus"`
 }
 
 // ---------------------------------------------------------------------------
@@ -291,11 +294,29 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// gosnowflake passes the connection-level database/schema/warehouse as
+	// URL query parameters (?databaseName=...&schemaName=...&warehouse=...)
+	// instead of body fields. The body-form is honored too in case any
+	// SDK does send them that way — body takes precedence over query.
+	q := r.URL.Query()
+	database := body.Data.DatabaseName
+	if database == "" {
+		database = q.Get("databaseName")
+	}
+	schema := body.Data.SchemaName
+	if schema == "" {
+		schema = q.Get("schemaName")
+	}
+	warehouse := body.Data.WarehouseName
+	if warehouse == "" {
+		warehouse = q.Get("warehouse")
+	}
+
 	sess := s.sessionMgr.CreateSession(
 		body.Data.LoginName,
-		body.Data.DatabaseName,
-		body.Data.SchemaName,
-		body.Data.WarehouseName,
+		database,
+		schema,
+		warehouse,
 		"SYSADMIN", // default role
 	)
 
@@ -338,9 +359,9 @@ func (s *Server) handleAuthenticator(w http.ResponseWriter, r *http.Request) {
 	}
 	// Stub: always succeed.
 	successResponse(w, map[string]interface{}{
-		"tokenUrl":      "",
-		"ssoUrl":        "",
-		"proofKey":      "",
+		"tokenUrl": "",
+		"ssoUrl":   "",
+		"proofKey": "",
 	})
 }
 
@@ -582,12 +603,12 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body struct {
-		Statement  string `json:"statement"`
-		Timeout    int    `json:"timeout"`
-		Database   string `json:"database"`
-		Schema     string `json:"schema"`
-		Warehouse  string `json:"warehouse"`
-		Role       string `json:"role"`
+		Statement string `json:"statement"`
+		Timeout   int    `json:"timeout"`
+		Database  string `json:"database"`
+		Schema    string `json:"schema"`
+		Warehouse string `json:"warehouse"`
+		Role      string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		errorResponse(w, http.StatusBadRequest, "400", "invalid request body")
@@ -612,11 +633,11 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		successResponse(w, map[string]interface{}{
-			"statementHandle":    queryID,
-			"status":             "SUCCESS",
-			"rowsAffected":       affected,
-			"resultSetMetaData":  map[string]interface{}{"numRows": 0, "format": "jsonv2", "rowType": []interface{}{}},
-			"data":               [][]string{},
+			"statementHandle":   queryID,
+			"status":            "SUCCESS",
+			"rowsAffected":      affected,
+			"resultSetMetaData": map[string]interface{}{"numRows": 0, "format": "jsonv2", "rowType": []interface{}{}},
+			"data":              [][]string{},
 		})
 		return
 	}
@@ -700,4 +721,60 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleSnowpipeIngest implements the Snowpipe REST ingest endpoint:
+//
+//	POST /v1/data/pipes/{db}/{schema}/{pipe}/insertFiles
+//	Body: {"files": [{"path": "path/in/stage"}, ...]}
+//
+// Real Snowflake returns a request id and the file load status. We hand the
+// file list off to the snowpipe engine via the orchestrator and return the
+// same shape — the orchestrator is required (no fallback) because pipe state
+// lives in the snowpipe.Engine which is only constructed via orchestrator.
+func (s *Server) handleSnowpipeIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
+		return
+	}
+	if s.orchestrator == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "503", "orchestrator not configured")
+		return
+	}
+	// Path: /v1/data/pipes/{db}/{schema}/{pipe}/insertFiles
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/v1/data/pipes/"), "/")
+	if len(parts) != 4 || parts[3] != "insertFiles" {
+		errorResponse(w, http.StatusNotFound, "404", "unknown pipe endpoint")
+		return
+	}
+	db, schema, pipe := parts[0], parts[1], parts[2]
+
+	var body struct {
+		Files []struct {
+			Path string `json:"path"`
+			Size int64  `json:"size"`
+		} `json:"files"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		errorResponse(w, http.StatusBadRequest, "400", "invalid request body")
+		return
+	}
+	if len(body.Files) == 0 {
+		errorResponse(w, http.StatusBadRequest, "400", "files list is required")
+		return
+	}
+	files := make([]string, 0, len(body.Files))
+	for _, f := range body.Files {
+		files = append(files, f.Path)
+	}
+	if err := s.orchestrator.InsertPipeFiles(r.Context(), db, schema, pipe, files); err != nil {
+		errorResponse(w, http.StatusBadRequest, "002043", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"requestId":  generateQueryID(),
+		"pipe":       fmt.Sprintf("%s.%s.%s", db, schema, pipe),
+		"statusCode": 200,
+		"message":    "SUCCESS",
+	})
 }

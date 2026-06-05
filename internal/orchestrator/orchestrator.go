@@ -93,6 +93,15 @@ func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sq
 		return result, err
 	}
 
+	// Step 2b: resolve any time-travel markers in-place. This rewrites
+	// `FROM /* MINIFLAKE_AT_* tbl <ref> */ tbl` into `FROM read_parquet('<file>') tbl`
+	// using a snapshot from the timetravel engine.
+	if expanded, err := o.expandTimeTravelMarkers(sess, rewritten); err != nil {
+		return nil, err
+	} else {
+		rewritten = expanded
+	}
+
 	upper := strings.ToUpper(strings.TrimSpace(rewritten))
 
 	// Step 3: route DDL.
@@ -141,10 +150,22 @@ func (o *Orchestrator) ExecNoResult(ctx context.Context, sql string, args ...int
 // ---------------------------------------------------------------------------
 
 var (
-	reMarkerUse      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_USE_(DATABASE|SCHEMA|WAREHOUSE|ROLE)\s+(\S+)\s*\*/`)
-	reMarkerCopyInto = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_COPY_INTO\s+(.*?)\s*\*/`)
-	reMarkerPut      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_PUT\s+(.*?)\s*\*/`)
-	reMarkerGet      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_GET\s+(.*?)\s*\*/`)
+	reMarkerUse          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_USE_(DATABASE|SCHEMA|WAREHOUSE|ROLE)\s+(\S+)\s*\*/`)
+	reMarkerCopyInto     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_COPY_INTO\s+(.*?)\s*\*/`)
+	reMarkerPut          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_PUT\s+(.*?)\s*\*/`)
+	reMarkerGet          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_GET\s+(.*?)\s*\*/`)
+	reMarkerCreateStream = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_STREAM\s+(.*?)\s*\*/`)
+	reMarkerDropStream   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_STREAM\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerShowStreams  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_STREAMS\s*(\S*)\s*\*/`)
+	reMarkerCreateTask   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_TASK\s+(.*?)\s*\*/`)
+	reMarkerDropTask     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_TASK\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerAlterTask    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_ALTER_TASK\s+(\S+)\s+(RESUME|SUSPEND)\s*\*/`)
+	reMarkerShowTasks    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_TASKS\s*(\S*)\s*\*/`)
+	reMarkerExecuteTask  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_EXECUTE_TASK\s+(\S+)\s*\*/`)
+	reMarkerCreatePipe   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_PIPE\s+(.*?)\s*\*/`)
+	reMarkerDropPipe     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_PIPE\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerShowPipes    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_PIPES\s*(\S*)\s*\*/`)
+	reMarkerUndropTable  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_UNDROP_TABLE\s+(\S+)\s*\*/`)
 )
 
 func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.Session, sql string) (*QueryResult, bool, error) {
@@ -202,20 +223,64 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 
 	// PUT
 	if m := reMarkerPut.FindStringSubmatch(sql); m != nil {
-		return &QueryResult{
-			Columns:       []string{"status"},
-			Rows:          [][]interface{}{{"PUT statement acknowledged (stub)"}},
-			StatementType: "PUT",
-		}, true, nil
+		return o.handlePut(sess, m[1])
 	}
 
 	// GET
 	if m := reMarkerGet.FindStringSubmatch(sql); m != nil {
-		return &QueryResult{
-			Columns:       []string{"status"},
-			Rows:          [][]interface{}{{"GET statement acknowledged (stub)"}},
-			StatementType: "GET",
-		}, true, nil
+		return o.handleGet(sess, m[1])
+	}
+
+	// CREATE STREAM
+	if m := reMarkerCreateStream.FindStringSubmatch(sql); m != nil {
+		return o.handleCreateStream(sess, m[1])
+	}
+	// DROP STREAM
+	if m := reMarkerDropStream.FindStringSubmatch(sql); m != nil {
+		return o.handleDropStream(sess, m[1], m[2] == "1")
+	}
+	// SHOW STREAMS
+	if m := reMarkerShowStreams.FindStringSubmatch(sql); m != nil {
+		return o.handleShowStreams(sess, m[1])
+	}
+
+	// CREATE TASK
+	if m := reMarkerCreateTask.FindStringSubmatch(sql); m != nil {
+		return o.handleCreateTask(sess, m[1])
+	}
+	// DROP TASK
+	if m := reMarkerDropTask.FindStringSubmatch(sql); m != nil {
+		return o.handleDropTask(sess, m[1], m[2] == "1")
+	}
+	// ALTER TASK
+	if m := reMarkerAlterTask.FindStringSubmatch(sql); m != nil {
+		return o.handleAlterTask(sess, m[1], m[2])
+	}
+	// SHOW TASKS
+	if m := reMarkerShowTasks.FindStringSubmatch(sql); m != nil {
+		return o.handleShowTasks(sess, m[1])
+	}
+	// EXECUTE TASK
+	if m := reMarkerExecuteTask.FindStringSubmatch(sql); m != nil {
+		return o.handleExecuteTask(ctx, sess, m[1])
+	}
+
+	// CREATE PIPE
+	if m := reMarkerCreatePipe.FindStringSubmatch(sql); m != nil {
+		return o.handleCreatePipe(sess, m[1])
+	}
+	// DROP PIPE
+	if m := reMarkerDropPipe.FindStringSubmatch(sql); m != nil {
+		return o.handleDropPipe(sess, m[1], m[2] == "1")
+	}
+	// SHOW PIPES
+	if m := reMarkerShowPipes.FindStringSubmatch(sql); m != nil {
+		return o.handleShowPipes(sess, m[1])
+	}
+
+	// UNDROP TABLE
+	if m := reMarkerUndropTable.FindStringSubmatch(sql); m != nil {
+		return o.handleUndropTable(ctx, sess, m[1])
 	}
 
 	return nil, false, nil
@@ -365,10 +430,6 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 	// DROP TABLE
 	if m := reDropTable.FindStringSubmatch(sql); m != nil {
 		tableName := cleanIdent(m[2])
-		_, execErr := o.engine.ExecNoResult(ctx, sql)
-		if execErr != nil && m[1] == "" {
-			return nil, true, execErr
-		}
 		db := sess.Database
 		schema := sess.Schema
 		if parts := splitQualifiedName(tableName); len(parts) == 3 {
@@ -378,6 +439,16 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 		} else if parts := splitQualifiedName(tableName); len(parts) == 2 {
 			schema = parts[0]
 			tableName = parts[1]
+		}
+		// Capture a snapshot before dropping so UNDROP can restore it.
+		// Errors here are not fatal — the drop still proceeds, but UNDROP
+		// will report no snapshot if we couldn't capture one.
+		if o.timeTravelEng != nil {
+			_ = o.timeTravelEng.CaptureSnapshot(db, schema, tableName, o.engine)
+		}
+		_, execErr := o.engine.ExecNoResult(ctx, sql)
+		if execErr != nil && m[1] == "" {
+			return nil, true, execErr
 		}
 		_ = o.catalog.DropTable(db, schema, tableName)
 		return ddlResult(), true, nil
@@ -489,7 +560,9 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 	if m := reDropStage.FindStringSubmatch(sql); m != nil {
 		name := cleanIdent(m[2])
 		err := o.stageMgr.DropStage(sess.Database, sess.Schema, name)
-		if err != nil {
+		// IF EXISTS is m[1]; swallow missing-stage errors when it's set so
+		// the standard `DROP IF EXISTS … CREATE …` pattern works.
+		if err != nil && m[1] == "" {
 			return nil, true, err
 		}
 		return ddlResult(), true, nil
@@ -562,6 +635,16 @@ func (o *Orchestrator) handleDML(ctx context.Context, sess *session.Session, sql
 
 	if !isDML {
 		return nil, false, nil
+	}
+
+	// Capture a pre-DML snapshot so AT/BEFORE queries (and the matching
+	// UNDROP via DROP TABLE) can return the state before this statement.
+	// Errors are non-fatal — losing a snapshot is better than failing the
+	// user's actual write.
+	if o.timeTravelEng != nil {
+		if tbl := extractTableFromDML(upper); tbl != "" {
+			_ = o.timeTravelEng.CaptureSnapshot(sess.Database, sess.Schema, tbl, o.engine)
+		}
 	}
 
 	affected, err := o.engine.ExecNoResult(ctx, sql)

@@ -9,10 +9,17 @@ on:
 
 permissions:
   contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
-    name: docker build
+  # PR builds: build the image, smoke-test /health, do not push. Keeps
+  # untrusted PR code from publishing to the registry.
+  build-and-test:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,15 +34,13 @@ jobs:
           file: ./Dockerfile
           push: false
           load: true
-          tags: miniflakedb/miniflake:ci
+          tags: miniflake:pr
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke test image
         run: |
-          docker run --rm -d --name miniflake-smoke -p 8084:8084 \
-            miniflakedb/miniflake:ci
-          # Wait for /health to come up (max 30s)
+          docker run --rm -d --name miniflake-smoke -p 8084:8084 miniflake:pr
           for i in $(seq 1 30); do
             if curl -sf http://localhost:8084/_miniflake/health >/dev/null 2>&1; then
               echo "health OK"
@@ -45,3 +50,55 @@ jobs:
           done
           docker logs miniflake-smoke || true
           docker stop miniflake-smoke || true
+
+  # main branch and version tags: build and publish to GHCR.
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # QEMU lets ubuntu-latest (amd64) build linux/arm64 layers without a
+      # native ARM runner. cgo cross-build inside the alpine builder stage
+      # still works because the toolchain comes from inside the image.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # main → :latest and :main-<sha>
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=main-{{sha}},enable={{is_default_branch}}
+            # v1.2.3 tag → :1.2.3, :1.2, :1
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          # Multi-arch: docker pull resolves the right manifest per host.
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

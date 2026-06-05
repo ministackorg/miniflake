@@ -46,7 +46,17 @@ func (m *Manager) Stop() {
 }
 
 // CreateSession creates a new session and returns it. The token is a UUID.
+// Empty database/schema default to "miniflake"/"main" so handlers always
+// have a fully-qualified target — gosnowflake doesn't always send the
+// database in the login request, and downstream subsystems (streams, tasks,
+// timetravel) key state by (db, schema, name) so empties cause collisions.
 func (m *Manager) CreateSession(user, database, schema, warehouse, role string) *Session {
+	if database == "" {
+		database = "miniflake"
+	}
+	if schema == "" {
+		schema = "main"
+	}
 	now := time.Now()
 	s := &Session{
 		ID:           generateUUID(),

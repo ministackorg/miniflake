@@ -54,14 +54,14 @@ type SessionInfo struct {
 
 // QueryRequest is sent by the driver to execute SQL.
 type QueryRequest struct {
-	SQLText             string                 `json:"sqlText"`
-	AsyncExec           bool                   `json:"asyncExec"`
-	SequenceID          int64                  `json:"sequenceId"`
-	IsInternal          bool                   `json:"isInternal"`
-	DescribeOnly        bool                   `json:"describeOnly"`
-	Parameters          map[string]string      `json:"parameters,omitempty"`
+	SQLText             string                  `json:"sqlText"`
+	AsyncExec           bool                    `json:"asyncExec"`
+	SequenceID          int64                   `json:"sequenceId"`
+	IsInternal          bool                    `json:"isInternal"`
+	DescribeOnly        bool                    `json:"describeOnly"`
+	Parameters          map[string]string       `json:"parameters,omitempty"`
 	Bindings            map[string]BindingValue `json:"bindings,omitempty"`
-	QuerySubmissionTime int64                  `json:"querySubmissionTime"`
+	QuerySubmissionTime int64                   `json:"querySubmissionTime"`
 }
 
 // BindingValue represents a single parameter binding.
@@ -111,14 +111,14 @@ type RowTypeField struct {
 
 // V2StatementRequest is the request body for the SQL API v2 endpoint.
 type V2StatementRequest struct {
-	Statement  string            `json:"statement"`
-	Timeout    int               `json:"timeout,omitempty"`
-	Database   string            `json:"database,omitempty"`
-	Schema     string            `json:"schema,omitempty"`
-	Warehouse  string            `json:"warehouse,omitempty"`
-	Role       string            `json:"role,omitempty"`
+	Statement  string               `json:"statement"`
+	Timeout    int                  `json:"timeout,omitempty"`
+	Database   string               `json:"database,omitempty"`
+	Schema     string               `json:"schema,omitempty"`
+	Warehouse  string               `json:"warehouse,omitempty"`
+	Role       string               `json:"role,omitempty"`
 	Bindings   map[string]V2Binding `json:"bindings,omitempty"`
-	Parameters map[string]string `json:"parameters,omitempty"`
+	Parameters map[string]string    `json:"parameters,omitempty"`
 }
 
 // V2Binding represents a single parameter binding in v2 API.

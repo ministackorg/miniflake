@@ -23,11 +23,11 @@ const (
 
 // FileFormat describes the file format options for COPY INTO.
 type FileFormat struct {
-	Type                       string   // CSV, JSON, PARQUET, AVRO, ORC
-	Compression                string   // AUTO, GZIP, BZ2, BROTLI, ZSTD, DEFLATE, RAW_DEFLATE, NONE
-	FieldDelimiter             string   // for CSV, default ','
-	RecordDelimiter            string   // for CSV, default '\n'
-	SkipHeader                 int      // for CSV
+	Type                       string // CSV, JSON, PARQUET, AVRO, ORC
+	Compression                string // AUTO, GZIP, BZ2, BROTLI, ZSTD, DEFLATE, RAW_DEFLATE, NONE
+	FieldDelimiter             string // for CSV, default ','
+	RecordDelimiter            string // for CSV, default '\n'
+	SkipHeader                 int    // for CSV
 	DateFormat                 string
 	TimestampFormat            string
 	NullIf                     []string

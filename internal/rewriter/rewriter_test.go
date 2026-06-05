@@ -37,17 +37,17 @@ func TestRewrite(t *testing.T) {
 		{
 			name:   "flatten table function",
 			input:  "SELECT * FROM TABLE(FLATTEN(input => col))",
-			expect: "SELECT * FROM unnest(col)",
+			expect: "SELECT * FROM unnest(col) AS flat(value)",
 		},
 		{
 			name:   "flatten without input =>",
 			input:  "SELECT * FROM TABLE(FLATTEN(col))",
-			expect: "SELECT * FROM unnest(col)",
+			expect: "SELECT * FROM unnest(col) AS flat(value)",
 		},
 		{
 			name:   "lateral flatten",
 			input:  "SELECT f.value FROM t, LATERAL FLATTEN(input => t.arr) AS f",
-			expect: "SELECT f.value FROM t, LATERAL unnest(t.arr) AS f",
+			expect: "SELECT f.value FROM t, LATERAL (SELECT unnest AS value FROM unnest(t.arr)) AS f",
 		},
 
 		// 3. QUALIFY — pass through
