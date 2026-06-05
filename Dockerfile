@@ -1,29 +1,37 @@
-FROM golang:1.26-alpine AS builder
+FROM golang:1.26-bookworm AS builder
 
-# go-duckdb links libduckdb (a C++ library), so the build needs g++ (for
-# libstdc++/-lstdc++) plus the system header that comes with linux-headers.
-# `gcc` + `musl-dev` alone is not enough — the linker fails with
-# `cannot find -lstdc++`.
-RUN apk add --no-cache gcc g++ musl-dev linux-headers
+# go-duckdb links a prebuilt C++ libduckdb.a; Debian's stock toolchain
+# (gcc + libstdc++ + dev symlinks) resolves -lstdc++ out of the box.
+# Alpine's musl setup needs extra package juggling for the same result.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -ldflags "-s -w" -o /miniflake ./cmd/miniflake
+RUN CGO_ENABLED=1 go build -ldflags "-s -w" -o /miniflake ./cmd/miniflake \
+    && mkdir -p /tmp/empty-data /tmp/empty-stages
 
-FROM alpine:3.20
+# Distroless runtime: contains glibc + libstdc++ + ca-certificates and
+# nothing else. No shell, no package manager, no busybox — the typical
+# CVE-bearing surface is just gone. Image size ~25 MB vs ~85 MB for
+# debian-slim. Trade-off: `docker exec sh` won't work; if you need to
+# inspect a running container, use `:debug` tag (BusyBox) or run the
+# binary against a debian-slim image one-off.
+FROM gcr.io/distroless/cc-debian12:nonroot
 
-# libstdc++ + libgcc are required at runtime since go-duckdb is dynamically
-# linked against them (the alpine builder produced a musl-libc binary that
-# still depends on the C++ runtime).
-RUN apk add --no-cache ca-certificates libstdc++ libgcc
 COPY --from=builder /miniflake /usr/local/bin/miniflake
 
-RUN mkdir -p /data /stages
+# Distroless has no shell so `mkdir` doesn't run there — create the dirs
+# in the builder stage and copy them over with the right ownership for the
+# nonroot user (uid 65532).
+COPY --from=builder --chown=65532:65532 /tmp/empty-data /data
+COPY --from=builder --chown=65532:65532 /tmp/empty-stages /stages
 
 EXPOSE 8084
 
-ENTRYPOINT ["miniflake"]
+ENTRYPOINT ["/usr/local/bin/miniflake"]
 CMD ["--data-dir", "/data", "--stage-dir", "/stages"]
