@@ -14,10 +14,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # macOS runners are billed at 10× rate against the free Actions
+        # quota and DuckDB's cgo build burns 15–30 min per arch on a fresh
+        # runner. macOS users go through `docker pull` or `make build`
+        # instead. Re-add darwin here when the project moves off free tier
+        # or when DuckDB ships native-arch wheels for go-duckdb.
         target:
-          - { label: linux-amd64,  runner: ubuntu-latest, goos: linux,  goarch: amd64 }
-          - { label: darwin-amd64, runner: macos-13,      goos: darwin, goarch: amd64 }
-          - { label: darwin-arm64, runner: macos-latest,  goos: darwin, goarch: arm64 }
+          - { label: linux-amd64, runner: ubuntu-latest, goos: linux, goarch: amd64 }
     steps:
       - uses: actions/checkout@v4
 
@@ -133,7 +136,5 @@ jobs:
           prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/miniflake-*-linux-amd64
-            dist/miniflake-*-darwin-amd64
-            dist/miniflake-*-darwin-arm64
             dist/miniflake-*.sha256
             dist/checksums.txt

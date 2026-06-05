@@ -40,7 +40,8 @@ MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Y
 docker run -p 8084:8084 ghcr.io/ministackorg/miniflake:latest
 # Runs on http://localhost:8084 — use --port to change
 
-# Option 2: Clone and build
+# Option 2: Clone and build (required for macOS — the GitHub release
+# binaries cover linux/amd64; macOS users build locally or use Docker)
 git clone https://github.com/ministackorg/miniflake
 cd miniflake
 make build
