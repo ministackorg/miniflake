@@ -1,0 +1,60 @@
+name: New Feature Request
+description: Request a Snowflake feature MiniFlake doesn't yet support
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template when you want a Snowflake feature MiniFlake doesn't
+        emulate yet. For bug reports against an existing feature, use the
+        Bug Report template instead.
+
+  - type: input
+    id: feature
+    attributes:
+      label: Snowflake feature
+      description: Full name + a link to the Snowflake docs page.
+      placeholder: "e.g. Dynamic Tables — https://docs.snowflake.com/en/user-guide/dynamic-tables-about"
+    validations:
+      required: true
+
+  - type: textarea
+    id: surface
+    attributes:
+      label: SQL syntax / endpoints needed
+      description: Which specific SQL commands or REST endpoints do you need? Be specific — MiniFlake favours depth over breadth.
+      placeholder: |
+        - CREATE DYNAMIC TABLE
+        - ALTER DYNAMIC TABLE ... REFRESH
+        - SHOW DYNAMIC TABLES
+        - (skip) DESCRIBE DYNAMIC TABLE history pagination
+    validations:
+      required: true
+
+  - type: textarea
+    id: usecase
+    attributes:
+      label: Use case
+      description: What tool / framework / workflow drove the need? DBT model? Terraform? Test suite? "Full parity" is not a use case.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: First-PR scope boundary
+      description: |
+        What's explicitly out of scope for the first cut? It's fine to ship a partial feature — it's not fine to ship a 10-statement stub where 9 return errors.
+      placeholder: |
+        In scope: CREATE/DROP/SHOW DYNAMIC TABLE, manual REFRESH
+        Out of scope: incremental refresh planning, dependency tracking across multiple tables, refresh history pagination
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Would you like to contribute this?
+      options:
+        - label: Yes, I'd like to implement this feature and open a PR
+        - label: I can help review/test an implementation

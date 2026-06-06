@@ -1,0 +1,100 @@
+name: Bug Report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the details below.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Wire protocol / Server (login, query, fetch, abort, heartbeat)
+        - SQL Rewriter
+        - Orchestrator (statement routing)
+        - SQL Core (SELECT, JOIN, CTEs, window functions, aggregations)
+        - DDL/DML (CREATE/DROP TABLE/VIEW/SCHEMA, INSERT/UPDATE/DELETE)
+        - MERGE INTO
+        - CREATE TABLE AS SELECT
+        - COPY INTO
+        - Semi-structured (VARIANT, OBJECT, ARRAY, PARSE_JSON, OBJECT_CONSTRUCT, ARRAY_AGG)
+        - Dot / bracket notation
+        - QUALIFY clause
+        - LATERAL FLATTEN
+        - Internal named stages (CREATE/DROP STAGE)
+        - PUT / GET commands
+        - Stage file listing (LS)
+        - Streams — CREATE/DROP/SHOW STREAM, change records
+        - Tasks — CREATE/DROP/ALTER/SHOW/EXECUTE TASK, cron scheduling
+        - Pipes — CREATE/DROP/SHOW PIPE
+        - Snowpipe REST endpoint (/v1/data/pipes/...)
+        - Time travel — AT / BEFORE / UNDROP
+        - Cloning (CREATE TABLE ... CLONE)
+        - UDFs (SQL / Python)
+        - RBAC (roles, grants, privileges)
+        - Information Schema views
+        - DuckDB engine (query execution, errors, types)
+        - Docker / CI / release
+        - Other (specify in description)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. Include error messages and stack traces if you have them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Minimal SQL or driver code to reproduce. Please include the SQL exactly as your driver sends it.
+      render: sql
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect Snowflake to do? Link to the Snowflake docs page if relevant.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: MiniFlake version
+      placeholder: "e.g. v0.1.0 or latest (and the image digest if Docker)"
+    validations:
+      required: true
+
+  - type: input
+    id: driver
+    attributes:
+      label: Driver / tool used
+      placeholder: "e.g. gosnowflake 1.19.1 / snowflake-connector-python 3.7 / snowflake-jdbc 3.16 / DBT / Terraform / direct HTTP"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Host OS / arch
+      placeholder: "e.g. macOS 14 arm64 / Ubuntu 22.04 amd64 / Windows 11 amd64 via WSL2"
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I confirmed the same query works against real Snowflake (or I'd genuinely expect it to)
+          required: true
+        - label: I'm running the latest MiniFlake image (`ghcr.io/ministackorg/miniflake:latest`) or HEAD of main
+          required: false
