@@ -2,10 +2,9 @@ name: docker
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']
+    tags: ['v*']      # publish only on version tags
   pull_request:
-    branches: [main]
+    branches: [main]  # PRs still smoke-test the build (no push)
 
 permissions:
   contents: read
@@ -81,14 +80,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # Tag-driven publishing only. v1.2.3 → :1.2.3, :1.2, :1, :latest.
+          # :latest is updated by docker/metadata-action's `latest=auto`,
+          # which sets it on every semver tag (the most-recent tag wins).
           tags: |
-            # main → :latest and :main-<sha>
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=main-{{sha}},enable={{is_default_branch}}
-            # v1.2.3 tag → :1.2.3, :1.2, :1
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=latest
 
       - name: Build and push
         uses: docker/build-push-action@v6
