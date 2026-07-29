@@ -6,6 +6,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-29
+
+### Added
+- **HTTPS support.** MiniFlake now serves TLS and plain HTTP on the same
+  `--port`; the first byte of each connection selects the protocol. Drivers
+  that require TLS and have no plain-HTTP mode — notably the Snowflake .NET
+  connector — can now connect, while `protocol=http` clients (gosnowflake,
+  Python, JDBC) are unaffected. A self-signed certificate is generated once and
+  persisted at `<data-dir>/miniflake-cert.pem` (stable across restarts, so
+  strict clients trust it once); `--tls-cert` / `--tls-key` override it with
+  your own key pair. Reported by @SaiSDET.
+
 ## [0.1.0] - 2026-06-06
 
 First public release. MiniFlake serves the Snowflake HTTP wire protocol on
@@ -79,5 +91,6 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
-[Unreleased]: https://github.com/ministackorg/miniflake/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/ministackorg/miniflake/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/ministackorg/miniflake/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ministackorg/miniflake/releases/tag/v0.1.0

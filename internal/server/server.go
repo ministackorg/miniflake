@@ -2,8 +2,10 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -36,6 +38,8 @@ type Server struct {
 	stageDir     string
 
 	httpServer *http.Server
+	tlsConfig  *tls.Config
+	certPath   string
 }
 
 // New creates a Server. Call ListenAndServe to start it.
@@ -85,9 +89,18 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 	return s
 }
 
-// ListenAndServe starts the HTTP server (blocking).
+// ListenAndServe starts the server (blocking). When TLS is enabled (see
+// EnableTLS) it accepts HTTPS and plain HTTP on the same port; otherwise it
+// serves plain HTTP only.
 func (s *Server) ListenAndServe() error {
-	return s.httpServer.ListenAndServe()
+	ln, err := net.Listen("tcp", s.httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	if s.tlsConfig != nil {
+		ln = &autoListener{Listener: ln, tlsConfig: s.tlsConfig}
+	}
+	return s.httpServer.Serve(ln)
 }
 
 // Shutdown gracefully shuts down the server.

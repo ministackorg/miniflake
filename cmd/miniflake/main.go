@@ -41,9 +41,11 @@ var (
 func main() {
 	var (
 		host        = flag.String("host", "0.0.0.0", "HTTP listen host")
-		port        = flag.Int("port", 8084, "HTTP listen port")
+		port        = flag.Int("port", 8084, "HTTP/HTTPS listen port")
 		dataDir     = flag.String("data-dir", "./data", "DuckDB database directory")
 		stageDir    = flag.String("stage-dir", "./stages", "Internal stages directory")
+		tlsCert     = flag.String("tls-cert", "", "TLS certificate PEM (auto-generated self-signed if unset)")
+		tlsKey      = flag.String("tls-key", "", "TLS private key PEM (auto-generated self-signed if unset)")
 		logLevel    = flag.String("log-level", "info", "Log level (debug, info, warn, error)")
 		readOnly    = flag.Bool("read-only", false, "Read-only mode")
 		showVersion = flag.Bool("version", false, "Print version and exit")
@@ -126,13 +128,22 @@ func main() {
 
 	srv := server.New(eng, sessMgr, *host, *port, *stageDir, orch)
 
+	// Serve HTTPS and plain HTTP on the same port. Drivers that require TLS
+	// (e.g. the Snowflake .NET connector, which has no plain-HTTP mode) connect
+	// over https; gosnowflake/Python/JDBC clients using protocol=http are
+	// unaffected. A self-signed cert is generated once and persisted under the
+	// data dir unless --tls-cert/--tls-key are supplied.
+	if err := srv.EnableTLS(*tlsCert, *tlsKey, *dataDir); err != nil {
+		log.Fatalf("enable tls: %v", err)
+	}
+
 	// Graceful shutdown on SIGINT / SIGTERM.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("miniflake %s listening on %s:%d (data=%s stages=%s)",
-			version, *host, *port, *dataDir, *stageDir)
+		log.Printf("miniflake %s listening on %s:%d (https+http, cert=%s, data=%s stages=%s)",
+			version, *host, *port, srv.CertPath(), *dataDir, *stageDir)
 		errCh <- srv.ListenAndServe()
 	}()
 

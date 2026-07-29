@@ -100,6 +100,17 @@ jdbc:snowflake://localhost:8084/?account=miniflake&user=test&password=test&proto
 
 The first two fields (account/user/password) are not validated — MiniFlake doesn't enforce credentials. They're accepted because the drivers refuse to connect without them.
 
+### HTTP and HTTPS
+
+MiniFlake serves **both plain HTTP and HTTPS on the same port** (`8084`). The examples above use `protocol=http`, which is the simplest path for gosnowflake, the Python connector, and JDBC. Drivers that require TLS — notably the **Snowflake .NET connector**, which has no plain-HTTP mode — connect over HTTPS to the same port with no extra flags.
+
+On first start MiniFlake generates a self-signed certificate and persists it at `<data-dir>/miniflake-cert.pem` (stable across restarts). Strict clients validate the chain, so import that certificate into your OS or runtime trust store once. To use your own certificate instead, pass `--tls-cert` and `--tls-key`.
+
+```bash
+# HTTPS health check against the same port (–k trusts the self-signed cert)
+curl -k https://localhost:8084/_miniflake/health
+```
+
 ---
 
 ## Internal API
@@ -249,10 +260,12 @@ In-process subsystems (each is a Go package under `internal/`):
 
 | Flag | Default | Description |
 |---|---|---|
-| `--host` | `0.0.0.0` | HTTP listen host |
-| `--port` | `8084` | HTTP listen port |
+| `--host` | `0.0.0.0` | HTTP/HTTPS listen host |
+| `--port` | `8084` | HTTP/HTTPS listen port (both are served on this one port) |
 | `--data-dir` | `./data` | DuckDB database directory |
 | `--stage-dir` | `./stages` | Internal stages directory |
+| `--tls-cert` | (auto) | TLS certificate PEM. If unset, a self-signed cert is generated and persisted at `<data-dir>/miniflake-cert.pem`. |
+| `--tls-key` | (auto) | TLS private key PEM. If unset, generated alongside the cert. |
 | `--log-level` | `info` | Log level (debug, info, warn, error) |
 | `--read-only` | `false` | Read-only mode |
 | `--version` | — | Print version and exit |

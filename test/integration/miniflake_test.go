@@ -109,8 +109,15 @@ func TestMain(m *testing.M) {
 		ttEng, cloneEng, udfReg, rbacEng, snowpipeEng,
 	)
 
-	// Start the server WITH the orchestrator.
+	// Start the server WITH the orchestrator. TLS is enabled so the same port
+	// serves both plain HTTP (the existing protocol=http tests) and HTTPS
+	// (TestTLSConnectionHTTPS) — proving the auto-detect listener doesn't
+	// regress the plain-HTTP path.
 	testSrv = server.New(testEng, sessMgr, "127.0.0.1", testPort, stageDir, orch)
+	if err := testSrv.EnableTLS("", "", dataDir); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to enable tls: %v\n", err)
+		os.Exit(1)
+	}
 	go func() {
 		if err := testSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
