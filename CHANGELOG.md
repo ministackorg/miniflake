@@ -6,6 +6,22 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
+  user (`@~`), and table (`@%table`) stages, including qualified refs
+  (`@db.schema.stage`), subpath filters (`@stage/path`), and
+  `PATTERN = '<regex>'`. Routed before the generic query path (which
+  previously forwarded `LIST` straight to DuckDB and broke on `@stage`
+  syntax). Returns `name, size, md5, last_modified` matching real
+  Snowflake output.
+
+  `PATTERN` matches against the whole relative path, as Snowflake does,
+  so `'a[.]csv'` does not match `dir/a.csv`; lead with `.*` to match
+  anywhere. MD5 is computed only for `LIST`/`LS`, keeping the
+  `ListFiles` path used by `COPY INTO` / `GET` free of hashing. Stages
+  whose backing directory is missing, and files removed concurrently,
+  list as absent instead of failing the statement.
+
 ## [0.1.1] - 2026-07-29
 
 ### Added

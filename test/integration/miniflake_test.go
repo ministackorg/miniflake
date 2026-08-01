@@ -4,7 +4,9 @@ package integration
 
 import (
 	"context"
+	"crypto/md5"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,6 +38,7 @@ var (
 	testSrv  *server.Server
 	testEng  *engine.Engine
 	sessMgr  *session.Manager
+	stageMgr *stage.Manager
 	dataDir  string
 )
 
@@ -78,7 +81,7 @@ func TestMain(m *testing.M) {
 	// Initialize all subsystems for the orchestrator.
 	cat := catalog.New()
 	cat.Init()
-	stageMgr := stage.NewManager(stageDir)
+	stageMgr = stage.NewManager(stageDir)
 	streamEng := stream.NewEngine()
 	ttEng := timetravel.NewEngine(dataDir+"/snapshots", 24*time.Hour)
 	udfReg := udf.NewRegistry()
@@ -900,8 +903,129 @@ func TestQualifyClause(t *testing.T) {
 // which never reaches our server. The Python and JDBC drivers behave
 // differently — server-side tests live in the orchestrator package.
 //
-// The unused filepath import is silenced by the line below.
-var _ = filepath.Join
+// LIST/LS is a plain metadata query (no client-side interception), so it's
+// exercised end-to-end here through gosnowflake. The file is seeded
+// directly into the stage's backing directory, the same place PUT would
+// have dropped it, because PUT itself can't be driven from this test.
+func TestListStage(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP STAGE IF EXISTS list_test_stage")
+	execSQL(t, db, "CREATE STAGE list_test_stage")
+
+	// Ask the stage manager where the stage lives rather than rebuilding its
+	// on-disk layout here, so a layout change can't fail this test for the
+	// wrong reason.
+	meta, err := stageMgr.GetStage("TESTDB", "PUBLIC", "list_test_stage")
+	if err != nil {
+		t.Fatalf("resolve stage: %v", err)
+	}
+	localPath := meta.LocalPath
+	content := []byte("id,name\n1,alice\n")
+	if err := os.MkdirAll(filepath.Join(localPath, "nested"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localPath, "data.csv"), content, 0o644); err != nil {
+		t.Fatalf("seed stage file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(localPath, "nested", "more.csv"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed nested file: %v", err)
+	}
+
+	sum := md5.Sum(content)
+	wantMD5 := hex.EncodeToString(sum[:])
+
+	for _, stmt := range []string{
+		"LIST @list_test_stage",
+		"LS @list_test_stage",
+		"LIST @PUBLIC.list_test_stage",
+		"LIST @TESTDB.PUBLIC.list_test_stage",
+	} {
+		assertListHasFile(t, db, stmt, "list_test_stage/data.csv", int64(len(content)), wantMD5)
+	}
+
+	// Subpath + PATTERN must filter, not silently return the whole stage.
+	rows, err := db.Query("LIST @list_test_stage/nested PATTERN = '.*\\.csv$'")
+	if err != nil {
+		t.Fatalf("LIST subpath+pattern: %v", err)
+	}
+	defer rows.Close()
+	var name, gotMD5, lastModified string
+	var size int64
+	if !rows.Next() {
+		t.Fatal("expected 1 nested row")
+	}
+	if err := rows.Scan(&name, &size, &gotMD5, &lastModified); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if name != "list_test_stage/nested/more.csv" {
+		t.Errorf("name = %q", name)
+	}
+	if rows.Next() {
+		t.Error("expected exactly 1 nested row")
+	}
+
+	execSQL(t, db, "DROP STAGE list_test_stage")
+}
+
+func TestListUserStage(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	// Integration sessions authenticate as user "test" (see openDB), and the
+	// user stage is created on first reference.
+	userPath := stageMgr.GetUserStage("test").LocalPath
+	content := []byte("user-stage\n")
+	if err := os.WriteFile(filepath.Join(userPath, "u.csv"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sum := md5.Sum(content)
+	assertListHasFile(t, db, "LS @~", "~/u.csv", int64(len(content)), hex.EncodeToString(sum[:]))
+}
+
+func assertListHasFile(t *testing.T, db *sql.DB, stmt, wantName string, wantSize int64, wantMD5 string) {
+	t.Helper()
+	rows, err := db.Query(stmt)
+	if err != nil {
+		t.Fatalf("%s: %v", stmt, err)
+	}
+	defer rows.Close()
+
+	cols, _ := rows.Columns()
+	if got := strings.Join(cols, ","); got != "name,size,md5,last_modified" {
+		t.Errorf("%s: columns = %q", stmt, got)
+	}
+
+	found := false
+	for rows.Next() {
+		var name, gotMD5, lastModified string
+		var size int64
+		if err := rows.Scan(&name, &size, &gotMD5, &lastModified); err != nil {
+			t.Fatalf("%s: scan: %v", stmt, err)
+		}
+		if name != wantName {
+			continue
+		}
+		found = true
+		if size != wantSize {
+			t.Errorf("%s: size = %d, want %d", stmt, size, wantSize)
+		}
+		if gotMD5 != wantMD5 {
+			t.Errorf("%s: md5 = %q, want %q", stmt, gotMD5, wantMD5)
+		}
+		if lastModified == "" {
+			t.Errorf("%s: last_modified was empty", stmt)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("%s: rows: %v", stmt, err)
+	}
+	if !found {
+		t.Fatalf("%s: missing row %q", stmt, wantName)
+	}
+}
 
 func TestTimeTravelAtOffset(t *testing.T) {
 	db := openDB(t)

@@ -1,10 +1,15 @@
 package stage
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -31,8 +36,10 @@ type StageMeta struct {
 
 // FileInfo describes a file within a stage.
 type FileInfo struct {
-	Name string
-	Size int64
+	Name    string
+	Size    int64
+	ModTime time.Time
+	MD5     string
 }
 
 // Manager manages Snowflake stages on the local filesystem.
@@ -137,24 +144,78 @@ func (m *Manager) GetFile(db, schema, stageName, srcPath, localPath string) erro
 	return copyFile(src, localPath)
 }
 
-// ListFiles lists files in a stage, optionally filtered by a glob pattern.
+// ListOptions controls optional filtering and checksum behaviour for listings.
+type ListOptions struct {
+	// Prefix keeps files whose relative path equals prefix or lives under
+	// prefix/ (Snowflake `@stage/path` semantics). Empty means no filter.
+	Prefix string
+	// Pattern is a filepath glob matched against the file basename. Used by
+	// COPY INTO / GET. Empty means no filter.
+	Pattern string
+	// Regex is a RE2 pattern matched against the slash-normalized relative
+	// path (Snowflake `LIST … PATTERN = '…'`). Empty means no filter.
+	Regex string
+	// Checksum, when true, populates FileInfo.MD5. Left false for hot paths
+	// (COPY INTO, GET) that only need names and sizes.
+	Checksum bool
+}
+
+// ListFiles lists files in a named stage, optionally filtered by a basename glob.
 func (m *Manager) ListFiles(db, schema, stageName, pattern string) ([]FileInfo, error) {
+	return m.ListFilesWithOptions(db, schema, stageName, ListOptions{Pattern: pattern})
+}
+
+// ListFilesWithOptions lists files in a named stage with optional filters.
+func (m *Manager) ListFilesWithOptions(db, schema, stageName string, opts ListOptions) ([]FileInfo, error) {
 	meta, err := m.GetStage(db, schema, stageName)
 	if err != nil {
 		return nil, err
 	}
+	return m.ListMetaFiles(meta, opts)
+}
+
+// ListMetaFiles lists files under an already-resolved stage (named, user, or table).
+func (m *Manager) ListMetaFiles(meta *StageMeta, opts ListOptions) ([]FileInfo, error) {
+	prefix := strings.Trim(filepath.ToSlash(opts.Prefix), "/")
+
+	var re *regexp.Regexp
+	if opts.Regex != "" {
+		// Snowflake's PATTERN has to match the whole path, not merely occur
+		// somewhere in it (Java Matcher.matches semantics), which is why its
+		// documented examples all lead with ".*". Anchor what the caller gave
+		// us so `PATTERN = 'a[.]csv'` does not quietly match `dir/a.csv`.
+		compiled, err := regexp.Compile(`^(?:` + opts.Regex + `)$`)
+		if err != nil {
+			return nil, fmt.Errorf("invalid PATTERN regexp: %w", err)
+		}
+		re = compiled
+	}
 
 	var files []FileInfo
-	err = filepath.Walk(meta.LocalPath, func(path string, info os.FileInfo, walkErr error) error {
+	err := filepath.WalkDir(meta.LocalPath, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			// The stage directory may not exist yet, and individual files can
+			// vanish mid-walk under a concurrent REMOVE or DROP STAGE. Neither
+			// should fail the listing: report what is actually there.
+			if errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
 			return walkErr
 		}
-		if info.IsDir() {
+		if d.IsDir() {
 			return nil
 		}
-		rel, _ := filepath.Rel(meta.LocalPath, path)
-		if pattern != "" {
-			matched, matchErr := filepath.Match(pattern, filepath.Base(rel))
+		rel, relErr := filepath.Rel(meta.LocalPath, path)
+		if relErr != nil {
+			return relErr
+		}
+		rel = filepath.ToSlash(rel)
+
+		if prefix != "" && rel != prefix && !strings.HasPrefix(rel, prefix+"/") {
+			return nil
+		}
+		if opts.Pattern != "" {
+			matched, matchErr := filepath.Match(opts.Pattern, filepath.Base(rel))
 			if matchErr != nil {
 				return matchErr
 			}
@@ -162,13 +223,53 @@ func (m *Manager) ListFiles(db, schema, stageName, pattern string) ([]FileInfo, 
 				return nil
 			}
 		}
-		files = append(files, FileInfo{Name: rel, Size: info.Size()})
+		if re != nil && !re.MatchString(rel) {
+			return nil
+		}
+
+		// Stat only what survives the filters, and tolerate the file going
+		// away between readdir and here.
+		info, infoErr := d.Info()
+		if infoErr != nil {
+			if errors.Is(infoErr, fs.ErrNotExist) {
+				return nil
+			}
+			return infoErr
+		}
+
+		fi := FileInfo{
+			Name:    rel,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		}
+		if opts.Checksum {
+			fi.MD5 = fileMD5(path)
+		}
+		files = append(files, fi)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list files: %w", err)
 	}
 	return files, nil
+}
+
+// fileMD5 returns the hex-encoded MD5 checksum of the file at path, matching
+// the checksum Snowflake's LIST command reports for staged files. Returns an
+// empty string if the file can't be read, rather than failing the whole
+// listing over one unreadable entry.
+func fileMD5(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	h := md5.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // RemoveFile removes a file from a stage.

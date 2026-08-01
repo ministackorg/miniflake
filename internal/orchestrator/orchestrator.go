@@ -120,7 +120,7 @@ func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sq
 	}
 
 	// Step 6: route queries (SELECT, SHOW, DESCRIBE, WITH, EXPLAIN).
-	if result, handled, err := o.handleQuery(ctx, rewritten, upper); handled {
+	if result, handled, err := o.handleQuery(ctx, sess, rewritten, upper); handled {
 		return result, err
 	}
 
@@ -704,7 +704,14 @@ func (o *Orchestrator) handleTransaction(ctx context.Context, sql, upper string)
 // Query routing (SELECT, SHOW, DESCRIBE, WITH, EXPLAIN)
 // ---------------------------------------------------------------------------
 
-func (o *Orchestrator) handleQuery(ctx context.Context, sql, upper string) (*QueryResult, bool, error) {
+func (o *Orchestrator) handleQuery(ctx context.Context, sess *session.Session, sql, upper string) (*QueryResult, bool, error) {
+	// LIST/LS @stage is a result-set-returning statement, but the stage lives
+	// in the stage manager, not DuckDB. Intercept before the generic bucket
+	// below forwards it to the engine.
+	if result, handled, err := o.handleListStage(sess, sql); handled {
+		return result, true, err
+	}
+
 	isQuery := strings.HasPrefix(upper, "SELECT") ||
 		strings.HasPrefix(upper, "SHOW") ||
 		strings.HasPrefix(upper, "DESCRIBE") ||

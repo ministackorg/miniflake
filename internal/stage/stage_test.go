@@ -1,6 +1,8 @@
 package stage
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -117,6 +119,141 @@ func TestListFilesWithPattern(t *testing.T) {
 	allFiles, _ := m.ListFiles("db", "sch", "s2", "")
 	if len(allFiles) != 3 {
 		t.Fatalf("expected 3 total files, got %d", len(allFiles))
+	}
+}
+
+func TestListFilesPopulatesMD5AndModTime(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "s3", StageInternal, "")
+
+	meta, _ := m.GetStage("db", "sch", "s3")
+	content := []byte("hello miniflake\n")
+	if err := os.WriteFile(filepath.Join(meta.LocalPath, "f.txt"), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default ListFiles must not hash: COPY INTO / GET share this path.
+	plain, err := m.ListFiles("db", "sch", "s3", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plain) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(plain))
+	}
+	if plain[0].MD5 != "" {
+		t.Errorf("default ListFiles MD5 = %q, want empty", plain[0].MD5)
+	}
+	if plain[0].ModTime.IsZero() {
+		t.Error("ModTime should not be zero")
+	}
+
+	files, err := m.ListFilesWithOptions("db", "sch", "s3", ListOptions{Checksum: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(files))
+	}
+
+	want := md5.Sum(content)
+	wantHex := hex.EncodeToString(want[:])
+	if files[0].MD5 != wantHex {
+		t.Errorf("MD5 = %q, want %q", files[0].MD5, wantHex)
+	}
+}
+
+func TestListMetaFilesPrefixAndRegex(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "s4", StageInternal, "")
+	meta, _ := m.GetStage("db", "sch", "s4")
+
+	write := func(rel, body string) {
+		t.Helper()
+		path := filepath.Join(meta.LocalPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("keep/a.csv", "a")
+	write("keep/b.txt", "b")
+	write("other/c.csv", "c")
+
+	files, err := m.ListMetaFiles(meta, ListOptions{Prefix: "keep", Regex: `.*\.csv$`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 || files[0].Name != "keep/a.csv" {
+		t.Fatalf("got %#v, want keep/a.csv only", files)
+	}
+}
+
+// Snowflake's PATTERN must match the whole path, not just occur inside it.
+func TestListMetaFilesRegexIsWholePathMatch(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "s5", StageInternal, "")
+	meta, _ := m.GetStage("db", "sch", "s5")
+
+	path := filepath.Join(meta.LocalPath, "keep")
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "a.csv"), []byte("a"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Matches a substring of "keep/a.csv" but not the whole path.
+	files, err := m.ListMetaFiles(meta, ListOptions{Regex: `a[.]csv`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Errorf("partial pattern matched %#v, want no rows", files)
+	}
+
+	files, err = m.ListMetaFiles(meta, ListOptions{Regex: `.*a[.]csv`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 1 {
+		t.Errorf("full-path pattern matched %#v, want keep/a.csv", files)
+	}
+}
+
+func TestListMetaFilesInvalidRegex(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "s6", StageInternal, "")
+	meta, _ := m.GetStage("db", "sch", "s6")
+
+	if _, err := m.ListMetaFiles(meta, ListOptions{Regex: `[unclosed`}); err == nil {
+		t.Fatal("expected an error for an invalid PATTERN")
+	}
+}
+
+// A stage directory that never existed, or was removed behind the server's
+// back, lists as empty rather than surfacing a filesystem error.
+func TestListMetaFilesMissingDirectory(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "s7", StageInternal, "")
+	meta, _ := m.GetStage("db", "sch", "s7")
+
+	if err := os.RemoveAll(meta.LocalPath); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := m.ListMetaFiles(meta, ListOptions{Checksum: true})
+	if err != nil {
+		t.Fatalf("missing stage dir: %v", err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("got %#v, want no rows", files)
 	}
 }
 
