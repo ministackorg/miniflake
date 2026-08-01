@@ -185,3 +185,42 @@ func assertRowCount(t *testing.T, orch *Orchestrator, sess *session.Session, tab
 		t.Fatalf("%s has %d rows, want %d", table, got, want)
 	}
 }
+
+// Setup scripts re-run constantly, so both idempotent forms of CREATE STAGE
+// have to behave. The regex captured them all along; the handler ignored them.
+func TestCreateStageIfNotExistsAndOrReplace(t *testing.T) {
+	orch, sess, cleanup := testOrchestrator(t)
+	defer cleanup()
+	ctx := context.Background()
+
+	mustExec(t, orch, sess, "CREATE STAGE idem_stage")
+
+	// Without IF NOT EXISTS a second create is still an error.
+	if _, err := orch.ExecuteSQL(ctx, sess, "CREATE STAGE idem_stage"); err == nil {
+		t.Fatal("expected a plain CREATE STAGE to fail on an existing stage")
+	}
+
+	// IF NOT EXISTS is a no-op on an existing stage, and keeps its files.
+	seedStageFile(t, orch, sess.Database, sess.Schema, "idem_stage", "keepme.csv", []byte("k"))
+	mustExec(t, orch, sess, "CREATE STAGE IF NOT EXISTS idem_stage")
+	result, err := orch.ExecuteSQL(ctx, sess, "LIST @idem_stage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("IF NOT EXISTS lost the stage contents: %#v", result.Rows)
+	}
+
+	// OR REPLACE recreates the stage, discarding its files, as Snowflake does.
+	mustExec(t, orch, sess, "CREATE OR REPLACE STAGE idem_stage")
+	result, err = orch.ExecuteSQL(ctx, sess, "LIST @idem_stage")
+	if err != nil {
+		t.Fatalf("LIST after OR REPLACE: %v", err)
+	}
+	if len(result.Rows) != 0 {
+		t.Fatalf("OR REPLACE kept files: %#v", result.Rows)
+	}
+
+	// OR REPLACE on a stage that does not exist yet simply creates it.
+	mustExec(t, orch, sess, "CREATE OR REPLACE STAGE brand_new_stage")
+}

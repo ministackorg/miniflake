@@ -7,6 +7,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
+- **`CREATE STAGE IF NOT EXISTS` and `CREATE OR REPLACE STAGE`.** Both
+  clauses were parsed and then ignored, so either form failed once the
+  stage existed and no setup script could be re-run. `OR REPLACE` now
+  recreates the stage and discards its files, as in Snowflake.
 - **`COPY INTO` from an unqualified stage.** `COPY INTO t FROM @my_stage`
   built its stage key from empty database and schema parts, looking up
   `..MY_STAGE` and always failing with `stage does not exist`. Only the

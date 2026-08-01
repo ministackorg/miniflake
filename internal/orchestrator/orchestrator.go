@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -550,11 +551,20 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 		return ddlResult(), true, nil
 	}
 
-	// CREATE STAGE
+	// CREATE STAGE, honouring both OR REPLACE and IF NOT EXISTS. Setup scripts
+	// lean on them heavily, and without this every re-run of one fails.
 	if m := reCreateStage.FindStringSubmatch(sql); m != nil {
 		name := cleanIdent(m[3])
+		if m[1] != "" {
+			// OR REPLACE discards the existing stage and its files, as in
+			// Snowflake. A stage that isn't there yet is not an error.
+			_ = o.stageMgr.DropStage(sess.Database, sess.Schema, name)
+		}
 		err := o.stageMgr.CreateStage(sess.Database, sess.Schema, name, stage.StageInternal, "")
 		if err != nil {
+			if m[2] != "" && errors.Is(err, stage.ErrStageExists) {
+				return ddlResult(), true, nil
+			}
 			return nil, true, err
 		}
 		return ddlResult(), true, nil

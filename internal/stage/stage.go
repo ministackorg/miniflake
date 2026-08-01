@@ -57,6 +57,11 @@ func NewManager(baseDir string) *Manager {
 	}
 }
 
+// ErrStageExists reports that a stage of that name is already registered, so
+// callers can implement CREATE STAGE IF NOT EXISTS without matching on the
+// error text.
+var ErrStageExists = errors.New("stage already exists")
+
 func stageKey(db, schema, name string) string {
 	return strings.ToUpper(fmt.Sprintf("%s.%s.%s", db, schema, name))
 }
@@ -68,7 +73,7 @@ func (m *Manager) CreateStage(db, schema, name string, stageType StageType, url 
 
 	key := stageKey(db, schema, name)
 	if _, exists := m.stages[key]; exists {
-		return fmt.Errorf("stage '%s' already exists", key)
+		return fmt.Errorf("stage '%s': %w", key, ErrStageExists)
 	}
 
 	localPath := filepath.Join(m.baseDir, "stages", strings.ToUpper(db), strings.ToUpper(schema), strings.ToUpper(name))
