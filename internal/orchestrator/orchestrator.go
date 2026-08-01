@@ -709,10 +709,13 @@ func (o *Orchestrator) handleTransaction(ctx context.Context, sql, upper string)
 // ---------------------------------------------------------------------------
 
 func (o *Orchestrator) handleQuery(ctx context.Context, sess *session.Session, sql, upper string) (*QueryResult, bool, error) {
-	// LIST/LS @stage is a result-set-returning statement, but the stage lives
-	// in the stage manager, not DuckDB. Intercept before the generic bucket
-	// below forwards it to the engine.
+	// LIST/LS and REMOVE/RM against a stage return result sets, but the stage
+	// lives in the stage manager, not DuckDB. Intercept both before the generic
+	// bucket below forwards them to the engine.
 	if result, handled, err := o.handleListStage(sess, sql); handled {
+		return result, true, err
+	}
+	if result, handled, err := o.handleRemoveStage(sess, sql); handled {
 		return result, true, err
 	}
 

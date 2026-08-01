@@ -22,6 +22,9 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `filepath.Join` cleans `../` segments instead of rejecting them.
 
 ### Added
+- **`REMOVE @stage` / `RM @stage`.** Deletes staged files for named,
+  user (`@~`) and table (`@%table`) stages, honouring subpath and
+  `PATTERN` filters, and returning Snowflake's `name, result` columns.
 - **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
   user (`@~`), and table (`@%table`) stages, including qualified refs
   (`@db.schema.stage`), subpath filters (`@stage/path`), and
