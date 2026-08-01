@@ -969,6 +969,37 @@ func TestListStage(t *testing.T) {
 	execSQL(t, db, "DROP STAGE list_test_stage")
 }
 
+// COPY INTO from a bare @stage reference, the form the README documents for
+// Snowpipe, has to resolve against the session database and schema.
+func TestCopyIntoBareStageRef(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP STAGE IF EXISTS copy_ref_stage")
+	execSQL(t, db, "CREATE STAGE copy_ref_stage")
+	execSQL(t, db, "CREATE OR REPLACE TABLE copy_ref_target (id INTEGER, name VARCHAR)")
+
+	meta, err := stageMgr.GetStage("TESTDB", "PUBLIC", "copy_ref_stage")
+	if err != nil {
+		t.Fatalf("resolve stage: %v", err)
+	}
+	if werr := os.WriteFile(filepath.Join(meta.LocalPath, "rows.csv"), []byte("1,alice\n2,bob\n"), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+
+	execSQL(t, db, "COPY INTO copy_ref_target FROM @copy_ref_stage FILE_FORMAT = (TYPE = 'CSV')")
+
+	var count int
+	if qerr := db.QueryRow("SELECT COUNT(*) FROM copy_ref_target").Scan(&count); qerr != nil {
+		t.Fatalf("count: %v", qerr)
+	}
+	if count != 2 {
+		t.Fatalf("loaded %d rows, want 2", count)
+	}
+
+	execSQL(t, db, "DROP STAGE copy_ref_stage")
+}
+
 func TestListUserStage(t *testing.T) {
 	db := openDB(t)
 	defer db.Close()

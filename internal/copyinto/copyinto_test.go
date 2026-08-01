@@ -117,7 +117,7 @@ func TestExecuteLoadParquet(t *testing.T) {
 
 	// Now test COPY INTO load.
 	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
-	results, err := executor.ExecuteLoad(ctx, "test_parquet", "DB.PUBLIC.PSTAGE", DefaultParquet(), CopyOptions{OnError: "ABORT_STATEMENT"})
+	results, err := executor.ExecuteLoad(ctx, "test_parquet", meta, "", DefaultParquet(), CopyOptions{OnError: "ABORT_STATEMENT"})
 	if err != nil {
 		t.Fatalf("ExecuteLoad: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestExecuteLoadCSV(t *testing.T) {
 	ff.SkipHeader = 1 // file has a header row
 
 	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
-	results, err := executor.ExecuteLoad(ctx, "test_csv", "DB.PUBLIC.CSVSTAGE", ff, CopyOptions{OnError: "ABORT_STATEMENT"})
+	results, err := executor.ExecuteLoad(ctx, "test_csv", meta, "", ff, CopyOptions{OnError: "ABORT_STATEMENT"})
 	if err != nil {
 		t.Fatalf("ExecuteLoad: %v", err)
 	}
@@ -195,9 +195,10 @@ func TestExecuteUnload(t *testing.T) {
 	if err := mgr.CreateStage("DB", "PUBLIC", "OUTSTAGE", stage.StageInternal, ""); err != nil {
 		t.Fatalf("create stage: %v", err)
 	}
+	meta, _ := mgr.GetStage("DB", "PUBLIC", "OUTSTAGE")
 
 	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
-	results, err := executor.ExecuteUnload(ctx, "to_unload", "DB.PUBLIC.OUTSTAGE", DefaultParquet(), CopyOptions{})
+	results, err := executor.ExecuteUnload(ctx, "to_unload", meta, "", DefaultParquet(), CopyOptions{})
 	if err != nil {
 		t.Fatalf("ExecuteUnload: %v", err)
 	}
@@ -209,7 +210,6 @@ func TestExecuteUnload(t *testing.T) {
 	}
 
 	// Verify the file was created.
-	meta, _ := mgr.GetStage("DB", "PUBLIC", "OUTSTAGE")
 	outFile := filepath.Join(meta.LocalPath, "data_0_0_0.parquet")
 	if _, err := os.Stat(outFile); os.IsNotExist(err) {
 		t.Error("expected parquet output file to exist")
@@ -240,7 +240,7 @@ func TestOnErrorContinue(t *testing.T) {
 	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
 
 	// With CONTINUE, we should get results for both files and no top-level error.
-	results, err := executor.ExecuteLoad(ctx, "strict_table", "DB.PUBLIC.BADSTAGE", ff, CopyOptions{OnError: "CONTINUE"})
+	results, err := executor.ExecuteLoad(ctx, "strict_table", meta, "", ff, CopyOptions{OnError: "CONTINUE"})
 	if err != nil {
 		t.Fatalf("unexpected top-level error with CONTINUE: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestPurgeAfterLoad(t *testing.T) {
 
 	ff := DefaultCSV()
 	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
-	results, err := executor.ExecuteLoad(ctx, "purge_test", "DB.PUBLIC.PURGESTAGE", ff, CopyOptions{
+	results, err := executor.ExecuteLoad(ctx, "purge_test", meta, "", ff, CopyOptions{
 		OnError: "ABORT_STATEMENT",
 		Purge:   true,
 	})

@@ -185,6 +185,10 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 		if perr != nil {
 			return nil, true, fmt.Errorf("COPY INTO: %w", perr)
 		}
+		meta, subPath, _, rerr := o.resolveStage(sess, stagePath)
+		if rerr != nil {
+			return nil, true, fmt.Errorf("COPY INTO: %w", rerr)
+		}
 		exec := copyinto.NewExecutor(
 			o.engine.ExecNoResult,
 			o.engine.Execute,
@@ -194,9 +198,9 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 		var execErr error
 		switch direction {
 		case copyinto.LoadIntoTable:
-			results, execErr = exec.ExecuteLoad(ctx, tableName, stagePath, format, options)
+			results, execErr = exec.ExecuteLoad(ctx, tableName, meta, subPath, format, options)
 		case copyinto.UnloadToStage:
-			results, execErr = exec.ExecuteUnload(ctx, tableName, stagePath, format, options)
+			results, execErr = exec.ExecuteUnload(ctx, tableName, meta, subPath, format, options)
 		default:
 			return nil, true, fmt.Errorf("COPY INTO: unknown direction")
 		}

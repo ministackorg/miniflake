@@ -114,33 +114,47 @@ func (m *Manager) GetStage(db, schema, name string) (*StageMeta, error) {
 	return meta, nil
 }
 
-// PutFile copies a local file into the stage directory.
+// PutFile copies a local file into a named stage.
 func (m *Manager) PutFile(db, schema, stageName, localPath, destPath string) error {
 	meta, err := m.GetStage(db, schema, stageName)
 	if err != nil {
 		return err
 	}
+	return m.PutMetaFile(meta, localPath, destPath)
+}
 
-	dest := filepath.Join(meta.LocalPath, destPath)
+// PutMetaFile copies a local file into an already-resolved stage (named, user,
+// or table), mirroring ListMetaFiles.
+func (m *Manager) PutMetaFile(meta *StageMeta, localPath, destPath string) error {
+	dest, err := resolveInStage(meta, destPath)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
-
 	return copyFile(localPath, dest)
 }
 
-// GetFile copies a file from the stage to a local path.
+// GetFile copies a file out of a named stage to a local path.
 func (m *Manager) GetFile(db, schema, stageName, srcPath, localPath string) error {
 	meta, err := m.GetStage(db, schema, stageName)
 	if err != nil {
 		return err
 	}
+	return m.GetMetaFile(meta, srcPath, localPath)
+}
 
-	src := filepath.Join(meta.LocalPath, srcPath)
+// GetMetaFile copies a file out of an already-resolved stage (named, user, or
+// table), mirroring ListMetaFiles.
+func (m *Manager) GetMetaFile(meta *StageMeta, srcPath, localPath string) error {
+	src, err := resolveInStage(meta, srcPath)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
 		return fmt.Errorf("failed to create destination directory: %w", err)
 	}
-
 	return copyFile(src, localPath)
 }
 
@@ -272,17 +286,42 @@ func fileMD5(path string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// RemoveFile removes a file from a stage.
+// RemoveFile removes a file from a named stage.
 func (m *Manager) RemoveFile(db, schema, stageName, path string) error {
 	meta, err := m.GetStage(db, schema, stageName)
 	if err != nil {
 		return err
 	}
-	target := filepath.Join(meta.LocalPath, path)
+	return m.RemoveMetaFile(meta, path)
+}
+
+// RemoveMetaFile removes a file under an already-resolved stage (named, user,
+// or table), mirroring ListMetaFiles.
+func (m *Manager) RemoveMetaFile(meta *StageMeta, path string) error {
+	target, err := resolveInStage(meta, path)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(target); err != nil {
 		return fmt.Errorf("failed to remove file: %w", err)
 	}
 	return nil
+}
+
+// resolveInStage joins a stage-relative path onto the stage root and refuses
+// anything that climbs back out of it. filepath.Join cleans "../" segments
+// rather than rejecting them, so without this a reference like
+// "@s/../../secret" would address files outside the stage entirely.
+func resolveInStage(meta *StageMeta, path string) (string, error) {
+	target := filepath.Join(meta.LocalPath, filepath.FromSlash(path))
+	rel, err := filepath.Rel(meta.LocalPath, target)
+	if err != nil {
+		return "", fmt.Errorf("invalid stage path %q: %w", path, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("stage path %q escapes the stage", path)
+	}
+	return target, nil
 }
 
 // GetUserStage returns (or creates) the @~ stage for a user.
