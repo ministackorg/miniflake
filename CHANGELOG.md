@@ -18,7 +18,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `PATTERN = '<regex>'`. Wrapped by the rewriter in a marker and answered
   from the stage manager (DuckDB has no `@stage` concept), the same
   routing PUT/GET/COPY INTO use. Returns `name, size, md5, last_modified`
-  matching real Snowflake output.Contributed by @fedemeister.
+  matching real Snowflake output.
 
   `PATTERN` matches against the whole relative path, as Snowflake does,
   so `'a[.]csv'` does not match `dir/a.csv`; lead with `.*` to match
