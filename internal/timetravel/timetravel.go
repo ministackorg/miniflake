@@ -49,6 +49,24 @@ func NewEngine(dataDir string, maxAge time.Duration) *Engine {
 	}
 }
 
+// Reset clears snapshot metadata and deletes snapshot files on disk.
+func (e *Engine) Reset() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.snapshots = make(map[string][]Snapshot)
+	e.nextID = 1
+	if e.dataDir == "" {
+		return nil
+	}
+	if err := os.RemoveAll(e.dataDir); err != nil {
+		return fmt.Errorf("timetravel: reset remove %s: %w", e.dataDir, err)
+	}
+	if err := os.MkdirAll(e.dataDir, 0o755); err != nil {
+		return fmt.Errorf("timetravel: reset mkdir %s: %w", e.dataDir, err)
+	}
+	return nil
+}
+
 func fqTableName(db, schema, table string) string {
 	return strings.ToLower(fmt.Sprintf("%s.%s.%s", db, schema, table))
 }

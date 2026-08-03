@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 
 	_ "github.com/marcboeker/go-duckdb"
@@ -51,6 +52,64 @@ func New(dataDir string) (*Engine, error) {
 // Close closes the underlying DuckDB connection pool.
 func (e *Engine) Close() error {
 	return e.db.Close()
+}
+
+// Reset drops user tables and views and restores the default database/schema
+// context. Used by POST /_miniflake/reset for CI isolation.
+func (e *Engine) Reset(ctx context.Context) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	type obj struct{ db, schema, name string }
+
+	dropAll := func(query, kind string) error {
+		rows, err := e.db.QueryContext(ctx, query)
+		if err != nil {
+			return fmt.Errorf("engine: reset list %s: %w", kind, err)
+		}
+		defer rows.Close()
+		var objs []obj
+		for rows.Next() {
+			var o obj
+			if err := rows.Scan(&o.db, &o.schema, &o.name); err != nil {
+				return fmt.Errorf("engine: reset scan %s: %w", kind, err)
+			}
+			objs = append(objs, o)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		for _, o := range objs {
+			stmt := fmt.Sprintf(`DROP %s IF EXISTS "%s"."%s"."%s" CASCADE`,
+				kind, escapeIdent(o.db), escapeIdent(o.schema), escapeIdent(o.name))
+			if _, err := e.db.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("engine: reset drop %s %s.%s.%s: %w", kind, o.db, o.schema, o.name, err)
+			}
+		}
+		return nil
+	}
+
+	// DuckDB marks system/internal relations; skip those.
+	if err := dropAll(
+		`SELECT database_name, schema_name, table_name FROM duckdb_tables() WHERE NOT internal`,
+		"TABLE",
+	); err != nil {
+		return err
+	}
+	if err := dropAll(
+		`SELECT database_name, schema_name, view_name FROM duckdb_views() WHERE NOT internal`,
+		"VIEW",
+	); err != nil {
+		return err
+	}
+
+	e.currentDB = "miniflake"
+	e.currentSchema = "main"
+	return nil
+}
+
+func escapeIdent(s string) string {
+	return strings.ReplaceAll(s, `"`, `""`)
 }
 
 // Execute runs a query that returns rows (SELECT, SHOW, etc.).

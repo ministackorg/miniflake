@@ -65,6 +65,14 @@ func NewEngine(execFn func(ctx context.Context, sql string) error) *Engine {
 	}
 }
 
+// Reset clears all pipes and ingest history.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.pipes = make(map[string]*Pipe)
+	e.history = make(map[string][]FileStatus)
+}
+
 // pipeKey builds the map key for a pipe.
 func pipeKey(db, schema, name string) string {
 	return fmt.Sprintf("%s.%s.%s",

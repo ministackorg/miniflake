@@ -44,6 +44,13 @@ func NewEngine(execFn func(ctx context.Context, sql string) error, queryFn Query
 	}
 }
 
+// Reset clears clone records. Table data itself is wiped by engine.Reset.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.clones = nil
+}
+
 // CloneTable creates a copy of a table using CREATE TABLE ... AS SELECT *.
 func (e *Engine) CloneTable(ctx context.Context, srcDB, srcSchema, srcTable, dstDB, dstSchema, dstTable string) error {
 	src := fmt.Sprintf(`"%s"."%s"."%s"`, srcDB, srcSchema, srcTable)

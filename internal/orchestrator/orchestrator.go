@@ -75,6 +75,52 @@ func New(
 	}
 }
 
+// Reset wipes in-process subsystem state and DuckDB user objects so CI can
+// start a clean run without restarting the process. Mirrors ministack's
+// POST /_ministack/reset.
+func (o *Orchestrator) Reset(ctx context.Context) error {
+	if o.engine != nil {
+		if err := o.engine.Reset(ctx); err != nil {
+			return err
+		}
+	}
+	if o.catalog != nil {
+		o.catalog.Reset()
+		// Match testOrchestrator / typical session defaults.
+		_ = o.catalog.CreateDatabase("MINIFLAKE", "SYSADMIN")
+		_ = o.catalog.CreateSchema("MINIFLAKE", "MAIN", "SYSADMIN")
+	}
+	if o.stageMgr != nil {
+		if err := o.stageMgr.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.streamEng != nil {
+		o.streamEng.Reset()
+	}
+	if o.taskSched != nil {
+		o.taskSched.Reset()
+	}
+	if o.timeTravelEng != nil {
+		if err := o.timeTravelEng.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.cloneEng != nil {
+		o.cloneEng.Reset()
+	}
+	if o.udfReg != nil {
+		o.udfReg.Reset()
+	}
+	if o.rbacEng != nil {
+		o.rbacEng.Reset()
+	}
+	if o.snowpipeEng != nil {
+		o.snowpipeEng.Reset()
+	}
+	return nil
+}
+
 // ExecuteSQL is the main entry point. It rewrites the SQL, detects the
 // statement type, and routes to the correct subsystem(s).
 func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sql string) (*QueryResult, error) {

@@ -115,11 +115,14 @@ curl -k https://localhost:8084/_miniflake/health
 
 ## Internal API
 
-MiniFlake exposes one internal endpoint today; more will land as the test-automation surface stabilises.
+MiniFlake exposes a small internal surface for test automation:
 
 ```bash
 # Health check
 curl http://localhost:8084/_miniflake/health
+
+# Reset all state between CI runs (no process restart)
+curl -X POST http://localhost:8084/_miniflake/reset
 
 # Snowpipe REST ingest
 curl -X POST http://localhost:8084/v1/data/pipes/TESTDB/PUBLIC/my_pipe/insertFiles \
@@ -175,6 +178,8 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | | JavaScript UDFs (needs the `goja` runtime — opted out for now) | 🚧 |
 | **RBAC** | Roles, grants — parsed, not enforced | ✅ |
 | **Snowpipe** | `CREATE/DROP/SHOW PIPE` + REST `/v1/data/pipes/{db}/{schema}/{pipe}/insertFiles` | ✅ |
+| **Internal** | `GET /_miniflake/health` | ✅ |
+| | `POST /_miniflake/reset` (CI state wipe) | ✅ |
 | **Information Schema** | `TABLES`, `COLUMNS`, `SCHEMATA` views | ✅ |
 
 ---

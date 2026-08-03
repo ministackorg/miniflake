@@ -1148,3 +1148,39 @@ func TestTimeTravelAtOffset(t *testing.T) {
 		t.Errorf("AT(OFFSET) result: %v (want [1])", got)
 	}
 }
+
+func TestResetEndpoint(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "CREATE OR REPLACE TABLE reset_ci_probe (id INT)")
+	execSQL(t, db, "INSERT INTO reset_ci_probe VALUES (1)")
+
+	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/_miniflake/reset", testPort), "application/json", nil)
+	if err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reset status %d", resp.StatusCode)
+	}
+
+	// New session after reset (old tokens were cleared).
+	db2 := openDB(t)
+	defer db2.Close()
+
+	_, err = db2.ExecContext(context.Background(), "SELECT * FROM reset_ci_probe")
+	if err == nil {
+		t.Fatal("expected reset_ci_probe to be gone after /_miniflake/reset")
+	}
+
+	execSQL(t, db2, "CREATE TABLE reset_ci_probe (id INT)")
+	execSQL(t, db2, "INSERT INTO reset_ci_probe VALUES (7)")
+	var n int
+	if err := db2.QueryRow("SELECT id FROM reset_ci_probe").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Errorf("got %d want 7", n)
+	}
+}

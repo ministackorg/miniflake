@@ -5,6 +5,14 @@ All notable changes to MiniFlake are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+- **`POST /_miniflake/reset`.** Wipes DuckDB user tables/views, stages on
+  disk, sessions, and in-process subsystem state (tasks, streams, pipes,
+  UDFs, RBAC, time-travel snapshots) so CI can isolate runs without
+  restarting the process. Same idea as ministack's `/_ministack/reset`.
+
 ## [0.1.2] - 2026-08-03
 
 ### Added

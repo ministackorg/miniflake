@@ -189,9 +189,8 @@ CI runs the same commands in `.github/workflows/test.yml`.
 - **In-memory state** lives behind a `sync.RWMutex`. Mutation paths take
   the write lock; read paths take the read lock.
 - **Reset semantics** — every subsystem that holds state exposes a
-  `Reset()` or equivalent for test isolation. (Not yet wired into a
-  `/_miniflake/reset` HTTP endpoint — that's a known gap; see
-  `CHANGELOG.md`.)
+  `Reset()` (or equivalent). `POST /_miniflake/reset` calls them in one
+  shot for CI isolation.
 - **No external Snowflake deps** — no `snowflake-connector-*` in the
   service code. The `gosnowflake` package is allowed in
   `test/integration/` only.
@@ -231,8 +230,6 @@ High-value contributions right now (state of the project as of v0.1.0):
   output is the raw string.
 - **`SHOW PARAMETERS`** — return Snowflake defaults so config-probing
   drivers don't fall over.
-- **A `/_miniflake/reset` HTTP endpoint** for CI isolation, mirroring
-  ministack's pattern.
 - **More `Information Schema` views** (`TABLE_PRIVILEGES`,
   `ROLE_GRANTS`).
 

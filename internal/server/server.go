@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,10 @@ type Server struct {
 	httpServer *http.Server
 	tlsConfig  *tls.Config
 	certPath   string
+
+	// resetMu serializes POST /_miniflake/reset so callers never observe a
+	// half-wiped server (same idea as ministack's reset lock).
+	resetMu sync.Mutex
 }
 
 // New creates a Server. Call ListenAndServe to start it.
@@ -80,6 +85,7 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 
 	// Internal.
 	mux.HandleFunc("/_miniflake/health", s.handleHealth)
+	mux.HandleFunc("/_miniflake/reset", s.handleReset)
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", host, port),
@@ -733,6 +739,32 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReset implements POST /_miniflake/reset. It wipes DuckDB user objects
+// and in-process subsystem state so CI can isolate runs without restarting
+// the process. GET and other methods return 405.
+func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
+		return
+	}
+	if s.orchestrator == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "503", "orchestrator not configured")
+		return
+	}
+
+	s.resetMu.Lock()
+	defer s.resetMu.Unlock()
+
+	if err := s.orchestrator.Reset(r.Context()); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "500", err.Error())
+		return
+	}
+	if s.sessionMgr != nil {
+		s.sessionMgr.Reset()
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

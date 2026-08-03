@@ -120,6 +120,28 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
+func TestReset_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/_miniflake/reset", nil)
+	s.handleReset(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestReset_WithoutOrchestrator(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/_miniflake/reset", nil)
+	s.handleReset(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Method validation
 // ---------------------------------------------------------------------------
