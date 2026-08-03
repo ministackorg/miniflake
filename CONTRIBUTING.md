@@ -227,10 +227,6 @@ High-value contributions right now (state of the project as of v0.1.0):
 
 - **`AT (STATEMENT => 'id')`** — statement-id-keyed time travel; today
   only OFFSET and TIMESTAMP work.
-- **Real cron timezone propagation in `SHOW TASKS`** — current schedule
-  output is the raw string.
-- **`SHOW PARAMETERS`** — return Snowflake defaults so config-probing
-  drivers don't fall over.
 - **A `/_miniflake/reset` HTTP endpoint** for CI isolation, mirroring
   ministack's pattern.
 - **More `Information Schema` views** (`TABLE_PRIVILEGES`,

@@ -729,9 +729,11 @@ func TestCreateAndShowTask(t *testing.T) {
 	defer db.Close()
 
 	execSQL(t, db, "DROP TASK IF EXISTS test_task")
+	execSQL(t, db, "DROP TASK IF EXISTS tz_task")
 	execSQL(t, db, "DROP TABLE IF EXISTS task_target")
 	execSQL(t, db, "CREATE TABLE task_target (n INT)")
 	execSQL(t, db, "CREATE TASK test_task WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS INSERT INTO task_target VALUES (42)")
+	execSQL(t, db, "CREATE TASK tz_task WAREHOUSE = wh SCHEDULE = 'USING CRON 0 9 * * * America/Los_Angeles' AS INSERT INTO task_target VALUES (1)")
 
 	rows, err := db.Query("SHOW TASKS")
 	if err != nil {
@@ -739,7 +741,17 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
+	tzCol := -1
+	for i, c := range cols {
+		if strings.EqualFold(c, "timezone") {
+			tzCol = i
+		}
+	}
+	if tzCol < 0 {
+		t.Fatalf("SHOW TASKS missing timezone column; cols=%v", cols)
+	}
 	found := false
+	foundTZ := false
 	for rows.Next() {
 		vals := make([]interface{}, len(cols))
 		ptrs := make([]interface{}, len(cols))
@@ -749,12 +761,23 @@ func TestCreateAndShowTask(t *testing.T) {
 		if err := rows.Scan(ptrs...); err != nil {
 			t.Fatal(err)
 		}
-		if name, ok := vals[1].(string); ok && strings.EqualFold(name, "test_task") {
+		name, _ := vals[1].(string)
+		if strings.EqualFold(name, "test_task") {
 			found = true
+		}
+		if strings.EqualFold(name, "tz_task") {
+			foundTZ = true
+			tz, _ := vals[tzCol].(string)
+			if tz != "America/Los_Angeles" {
+				t.Errorf("tz_task timezone=%q, want America/Los_Angeles", tz)
+			}
 		}
 	}
 	if !found {
 		t.Error("test_task not in SHOW TASKS")
+	}
+	if !foundTZ {
+		t.Error("tz_task not in SHOW TASKS")
 	}
 
 	// EXECUTE TASK runs the body once.
@@ -768,6 +791,59 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 
 	execSQL(t, db, "DROP TASK test_task")
+	execSQL(t, db, "DROP TASK tz_task")
+}
+
+func TestShowParameters(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	rows, err := db.Query("SHOW PARAMETERS LIKE 'TIMEZONE'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	wantCols := []string{"key", "value", "default", "level", "description"}
+	if len(cols) != len(wantCols) {
+		t.Fatalf("cols=%v", cols)
+	}
+
+	found := false
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		key, _ := vals[0].(string)
+		if key == "TIMEZONE" {
+			found = true
+			if vals[1] != "America/Los_Angeles" {
+				t.Errorf("TIMEZONE value=%v", vals[1])
+			}
+		}
+	}
+	if !found {
+		t.Error("TIMEZONE not in SHOW PARAMETERS LIKE 'TIMEZONE'")
+	}
+
+	// Bare SHOW PARAMETERS must return a non-empty catalog.
+	all, err := db.Query("SHOW PARAMETERS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer all.Close()
+	n := 0
+	for all.Next() {
+		n++
+	}
+	if n < 10 {
+		t.Errorf("SHOW PARAMETERS returned %d rows, want a useful default set", n)
+	}
 }
 
 func TestCreateAndShowPipe(t *testing.T) {

@@ -108,6 +108,36 @@ func rewritePipes(sql string) string {
 }
 
 // ---------------------------------------------------------------------------
+// SHOW PARAMETERS
+// ---------------------------------------------------------------------------
+
+// Drivers probe session parameters at connect time. DuckDB has no equivalent,
+// so wrap the statement in a marker; the orchestrator answers from a static
+// default catalog (see handleShowParameters).
+var reShowParameters = regexp.MustCompile(
+	`(?is)^\s*SHOW\s+PARAMETERS` +
+		`(?:\s+LIKE\s+'([^']*)')?` +
+		`(?:\s+(?:IN|FOR)\s+(SESSION|ACCOUNT|USER|WAREHOUSE|DATABASE|SCHEMA|TASK|TABLE)(?:\s+(\S+))?)?` +
+		`\s*;?\s*$`,
+)
+
+func rewriteShowParameters(sql string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(sql), ";")
+	m := reShowParameters.FindStringSubmatch(trimmed)
+	if m == nil {
+		return sql
+	}
+	like := m[1]
+	scope := m[2]
+	// Encode as: /* MINIFLAKE_SHOW_PARAMETERS <scope>| <like> */
+	// scope defaults to SESSION; like may be empty.
+	if scope == "" {
+		scope = "SESSION"
+	}
+	return "/* MINIFLAKE_SHOW_PARAMETERS " + strings.ToUpper(scope) + " | " + like + " */"
+}
+
+// ---------------------------------------------------------------------------
 // Stage file commands: LIST/LS and REMOVE/RM against @stage
 // ---------------------------------------------------------------------------
 //

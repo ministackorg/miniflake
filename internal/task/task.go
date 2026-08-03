@@ -44,6 +44,7 @@ type TaskInfo struct {
 	DatabaseName string
 	SchemaName   string
 	Schedule     string
+	Timezone     string // IANA tz from USING CRON … <tz>; empty for MINUTE schedules
 	State        TaskState
 	Warehouse    string
 	Predecessor  string
@@ -194,6 +195,7 @@ func (s *Scheduler) ShowTasks(db, schema string) []TaskInfo {
 				DatabaseName: t.DatabaseName,
 				SchemaName:   t.SchemaName,
 				Schedule:     t.Schedule,
+				Timezone:     ScheduleTimezone(t.Schedule),
 				State:        t.State,
 				Warehouse:    t.Warehouse,
 				Predecessor:  t.Predecessor,
@@ -379,11 +381,13 @@ func (s *Scheduler) evaluateWhen(t *Task) bool {
 
 // ScheduleInterval represents a parsed schedule.
 type ScheduleInterval struct {
-	Minutes int    // for "N MINUTE" schedules
-	Cron    string // raw cron expression
+	Minutes  int    // for "N MINUTE" schedules
+	Cron     string // 5-field cron expression, optionally followed by IANA tz
+	Timezone string // IANA tz from a USING CRON schedule; "UTC" if omitted
 }
 
 var minuteRe = regexp.MustCompile(`(?i)^(\d+)\s+MINUTES?$`)
+var usingCronRe = regexp.MustCompile(`(?i)^USING\s+CRON\s+(.+)$`)
 
 // ParseSchedule parses a Snowflake schedule string.
 // Supports "N MINUTE" and "USING CRON <expr> <tz>" formats.
@@ -399,18 +403,36 @@ func ParseSchedule(schedule string) (*ScheduleInterval, error) {
 		return &ScheduleInterval{Minutes: n}, nil
 	}
 
-	// Check for CRON format: "USING CRON <expr> <timezone>"
-	upper := strings.ToUpper(schedule)
-	if strings.HasPrefix(upper, "USING CRON ") {
-		cronPart := strings.TrimPrefix(schedule, schedule[:len("USING CRON ")])
-		cronPart = strings.TrimSpace(cronPart)
+	// Check for CRON format: "USING CRON <expr> [<timezone>]"
+	if m := usingCronRe.FindStringSubmatch(schedule); m != nil {
+		cronPart := strings.TrimSpace(m[1])
 		if cronPart == "" {
 			return nil, fmt.Errorf("empty cron expression")
 		}
-		return &ScheduleInterval{Cron: cronPart}, nil
+		// Validate fields + timezone the same way the scheduler will.
+		_, loc, err := parseCronExpr(cronPart)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cron schedule: %w", err)
+		}
+		tzName := loc.String()
+		if parts := strings.Fields(cronPart); len(parts) > 5 {
+			tzName = parts[5]
+		}
+		return &ScheduleInterval{Cron: cronPart, Timezone: tzName}, nil
 	}
 
 	return nil, fmt.Errorf("unrecognized schedule format: %q", schedule)
+}
+
+// ScheduleTimezone returns the IANA timezone from a USING CRON schedule,
+// or "" for minute schedules / bad input. SHOW TASKS uses this so the
+// timezone is a real column instead of buried only inside schedule.
+func ScheduleTimezone(schedule string) string {
+	si, err := ParseSchedule(schedule)
+	if err != nil {
+		return ""
+	}
+	return si.Timezone
 }
 
 // nextRunTime computes the next run time based on the schedule and the current

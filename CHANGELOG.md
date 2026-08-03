@@ -5,6 +5,22 @@ All notable changes to MiniFlake are documented here. The format follows
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Added
+- **`SHOW PARAMETERS`.** Returns a default session parameter catalog
+  (`key`, `value`, `default`, `level`, `description`) so drivers that
+  probe config at connect time get a real result set. Supports `LIKE`
+  and `IN SESSION` / `IN ACCOUNT`. `ALTER SESSION` is not wired yet, so
+  value always matches default.
+
+### Fixed
+- **`SHOW TASKS` exposes the cron timezone.** For
+  `USING CRON ... <tz>`, `SHOW TASKS` now has a `timezone` column with
+  the IANA zone the scheduler uses. Bad timezones fail at `CREATE TASK`.
+  (MiniFlake already ships extra task columns beyond Snowflake's list;
+  this one sits next to `last_run_at` / `next_run_at`.)
+
 ## [0.1.2] - 2026-08-03
 
 ### Added

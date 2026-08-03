@@ -66,6 +66,7 @@ func TestScheduleParsing(t *testing.T) {
 		{"60 MINUTES", false, 60, false},
 		{"USING CRON 0 9 * * * UTC", false, 0, true},
 		{"USING CRON */5 * * * * America/New_York", false, 0, true},
+		{"USING CRON 0 9 * * * Atlantis", true, 0, false},
 		{"INVALID SCHEDULE", true, 0, false},
 		{"", true, 0, false},
 	}
@@ -88,6 +89,37 @@ func TestScheduleParsing(t *testing.T) {
 		if tt.isCron && si.Cron == "" {
 			t.Errorf("ParseSchedule(%q): expected cron expression", tt.input)
 		}
+		if tt.isCron && si.Timezone == "" {
+			t.Errorf("ParseSchedule(%q): expected timezone", tt.input)
+		}
+	}
+}
+
+func TestScheduleTimezone(t *testing.T) {
+	if got := ScheduleTimezone("USING CRON 0 9 * * * America/Los_Angeles"); got != "America/Los_Angeles" {
+		t.Errorf("got %q", got)
+	}
+	if got := ScheduleTimezone("USING CRON 0 * * * *"); got != "UTC" {
+		t.Errorf("cron without tz: got %q want UTC", got)
+	}
+	if got := ScheduleTimezone("5 MINUTE"); got != "" {
+		t.Errorf("minute schedule: got %q want empty", got)
+	}
+}
+
+func TestShowTasksPropagatesTimezone(t *testing.T) {
+	s := NewScheduler(func(ctx context.Context, sql string) error { return nil })
+	if err := s.CreateTask("db", "public", "tz_task", "SELECT 1",
+		"USING CRON 0 9 * * * America/Los_Angeles", "wh", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	infos := s.ShowTasks("db", "public")
+	if len(infos) != 1 {
+		t.Fatalf("ShowTasks: %+v", infos)
+	}
+	if infos[0].Timezone != "America/Los_Angeles" {
+		t.Errorf("Timezone=%q, want America/Los_Angeles (got raw schedule %q)",
+			infos[0].Timezone, infos[0].Schedule)
 	}
 }
 
