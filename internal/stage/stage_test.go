@@ -192,6 +192,54 @@ func TestListMetaFilesPrefixAndRegex(t *testing.T) {
 	}
 }
 
+// Snowflake treats @stage/<path> as a literal string prefix on the file path,
+// not a whole-component match: `data` matches `data.csv`, `database.csv` and
+// `data/x.csv`, but not `other.csv`. A trailing slash narrows to the folder.
+func TestListMetaFilesPrefixIsLiteral(t *testing.T) {
+	dir := t.TempDir()
+	m := NewManager(dir)
+	_ = m.CreateStage("db", "sch", "sp", StageInternal, "")
+	meta, _ := m.GetStage("db", "sch", "sp")
+
+	write := func(rel string) {
+		t.Helper()
+		path := filepath.Join(meta.LocalPath, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("data.csv")
+	write("database.csv")
+	write("data/x.csv")
+	write("other.csv")
+
+	names := func(opts ListOptions) []string {
+		t.Helper()
+		files, err := m.ListMetaFiles(meta, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := make([]string, len(files))
+		for i, f := range files {
+			out[i] = f.Name
+		}
+		return out
+	}
+
+	// Literal prefix "data" catches the partial-name matches too.
+	if got := len(names(ListOptions{Prefix: "data"})); got != 3 {
+		t.Errorf("prefix 'data' matched %d files, want 3 (data.csv, database.csv, data/x.csv)", got)
+	}
+	// A trailing slash scopes to the folder only.
+	folder := names(ListOptions{Prefix: "data/"})
+	if len(folder) != 1 || folder[0] != "data/x.csv" {
+		t.Errorf("prefix 'data/' = %#v, want [data/x.csv]", folder)
+	}
+}
+
 // Snowflake's PATTERN must match the whole path, not just occur inside it.
 func TestListMetaFilesRegexIsWholePathMatch(t *testing.T) {
 	dir := t.TempDir()

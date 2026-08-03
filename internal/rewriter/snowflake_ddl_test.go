@@ -32,6 +32,29 @@ func TestRewriteStreams(t *testing.T) {
 	}
 }
 
+func TestRewriteStageCommands(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"LIST @s":                            "MINIFLAKE_LIST",
+		"LS @s":                              "MINIFLAKE_LIST",
+		"LIST @db.sch.s/path PATTERN = '.*'": "MINIFLAKE_LIST",
+		"REMOVE @s":                          "MINIFLAKE_REMOVE",
+		"RM @s/path":                         "MINIFLAKE_REMOVE",
+		"LIST @s;":                           "MINIFLAKE_LIST LIST @s ",
+	}
+	for sql, want := range cases {
+		got := mustRewrite(t, sql)
+		if !strings.Contains(got, want) {
+			t.Errorf("%q → %q (want substring %q)", sql, got, want)
+		}
+	}
+
+	// A LIST that isn't a stage command must not be wrapped.
+	if got := mustRewrite(t, "LISTAGG(x)"); strings.Contains(got, "MINIFLAKE_LIST") {
+		t.Errorf("LISTAGG wrongly wrapped: %q", got)
+	}
+}
+
 func TestRewriteTasks(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

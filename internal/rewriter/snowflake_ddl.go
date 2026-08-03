@@ -108,6 +108,29 @@ func rewritePipes(sql string) string {
 }
 
 // ---------------------------------------------------------------------------
+// Stage file commands: LIST/LS and REMOVE/RM against @stage
+// ---------------------------------------------------------------------------
+//
+// DuckDB has no @stage concept, so these can't be executed directly. Wrap them
+// in markers carrying the original statement; the orchestrator answers them
+// from the stage manager (see handleListStage / handleRemoveStage in
+// snowflake_handlers.go). PUT and GET follow the same pattern in rewritePutGet.
+
+var reListCmd = regexp.MustCompile(`(?is)^\s*(?:LIST|LS)\s+@`)
+var reRemoveCmd = regexp.MustCompile(`(?is)^\s*(?:REMOVE|RM)\s+@`)
+
+func rewriteStageCommands(sql string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(sql), ";")
+	if reListCmd.MatchString(trimmed) {
+		return "/* MINIFLAKE_LIST " + trimmed + " */"
+	}
+	if reRemoveCmd.MatchString(trimmed) {
+		return "/* MINIFLAKE_REMOVE " + trimmed + " */"
+	}
+	return sql
+}
+
+// ---------------------------------------------------------------------------
 // Time travel / UNDROP
 // ---------------------------------------------------------------------------
 

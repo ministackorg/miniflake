@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/miniflakedb/miniflake/internal/session"
+	"github.com/miniflakedb/miniflake/internal/stage"
 	"github.com/miniflakedb/miniflake/internal/task"
 )
 
@@ -343,4 +344,107 @@ func (o *Orchestrator) expandTimeTravelMarkers(sess *session.Session, sql string
 		return "read_parquet('" + escapeStringLiteral(file) + "')"
 	})
 	return sql, firstErr
+}
+
+// ---------------------------------------------------------------------------
+// Stage file commands: LIST/LS and REMOVE/RM
+// ---------------------------------------------------------------------------
+//
+// The rewriter wraps `LIST @stage` / `REMOVE @stage` in markers (see
+// rewriteStageCommands) because DuckDB has no @stage concept. Both resolve
+// their reference through the shared resolver in stageref.go, so a given
+// reference names the same files for LIST, REMOVE, PUT, GET and COPY INTO.
+//
+// PATTERN = '<regex>' is optional and accepted on both statements (RE2;
+// Snowflake documents Java Pattern semantics — see ListMetaFiles for the
+// whole-path anchoring).
+var (
+	reListStage   = regexp.MustCompile(`(?i)^(?:LIST|LS)\s+@(\S+)`)
+	reRemoveStage = regexp.MustCompile(`(?i)^(?:REMOVE|RM)\s+@(\S+)`)
+	reListPattern = regexp.MustCompile(`(?i)\bPATTERN\s*=\s*'([^']*)'`)
+)
+
+// listTimeFormat matches the last_modified rendering of real Snowflake's LIST
+// output. "GMT" is a literal here, not a layout element; net/http relies on
+// the same trick for http.TimeFormat.
+const listTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
+
+func (o *Orchestrator) handleListStage(sess *session.Session, originalSQL string) (*QueryResult, bool, error) {
+	m := reListStage.FindStringSubmatch(originalSQL)
+	if m == nil {
+		return nil, true, fmt.Errorf("LIST: unable to parse %q", originalSQL)
+	}
+
+	meta, subpath, namePrefix, err := o.resolveStage(sess, m[1])
+	if err != nil {
+		return nil, true, fmt.Errorf("LIST: %w", err)
+	}
+
+	pattern := ""
+	if pm := reListPattern.FindStringSubmatch(originalSQL); pm != nil {
+		pattern = pm[1]
+	}
+
+	files, err := o.stageMgr.ListMetaFiles(meta, stage.ListOptions{
+		Prefix:   subpath,
+		Regex:    pattern,
+		Checksum: true,
+	})
+	if err != nil {
+		return nil, true, err
+	}
+
+	rows := make([][]interface{}, 0, len(files))
+	for _, f := range files {
+		rows = append(rows, []interface{}{
+			namePrefix + "/" + f.Name,
+			f.Size,
+			f.MD5,
+			f.ModTime.UTC().Format(listTimeFormat),
+		})
+	}
+	return &QueryResult{
+		Columns:       []string{"name", "size", "md5", "last_modified"},
+		Rows:          rows,
+		StatementType: "LIST",
+	}, true, nil
+}
+
+func (o *Orchestrator) handleRemoveStage(sess *session.Session, originalSQL string) (*QueryResult, bool, error) {
+	m := reRemoveStage.FindStringSubmatch(originalSQL)
+	if m == nil {
+		return nil, true, fmt.Errorf("REMOVE: unable to parse %q", originalSQL)
+	}
+
+	meta, subpath, namePrefix, err := o.resolveStage(sess, m[1])
+	if err != nil {
+		return nil, true, fmt.Errorf("REMOVE: %w", err)
+	}
+
+	pattern := ""
+	if pm := reListPattern.FindStringSubmatch(originalSQL); pm != nil {
+		pattern = pm[1]
+	}
+
+	files, err := o.stageMgr.ListMetaFiles(meta, stage.ListOptions{
+		Prefix: subpath,
+		Regex:  pattern,
+	})
+	if err != nil {
+		return nil, true, fmt.Errorf("REMOVE: %w", err)
+	}
+
+	rows := make([][]interface{}, 0, len(files))
+	for _, f := range files {
+		result := "removed"
+		if rmErr := o.stageMgr.RemoveMetaFile(meta, f.Name); rmErr != nil {
+			result = "failed: " + rmErr.Error()
+		}
+		rows = append(rows, []interface{}{namePrefix + "/" + f.Name, result})
+	}
+	return &QueryResult{
+		Columns:       []string{"name", "result"},
+		Rows:          rows,
+		StatementType: "REMOVE",
+	}, true, nil
 }

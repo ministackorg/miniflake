@@ -216,8 +216,8 @@ Client (gosnowflake / Python / JDBC)
           v
    +--------------+
    | Orchestrator |  Routes Snowflake-specific syntax (USE, COPY, PUT,
-   |              |  GET, CREATE STREAM/TASK/PIPE, AT/BEFORE, UNDROP,
-   |              |  MERGE) to subsystem engines
+   |              |  GET, LIST, REMOVE, CREATE STREAM/TASK/PIPE,
+   |              |  AT/BEFORE, UNDROP, MERGE) to subsystem engines
    +--------------+
           |
           v
