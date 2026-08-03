@@ -225,8 +225,6 @@ CI runs the same commands in `.github/workflows/test.yml`.
 
 High-value contributions right now (state of the project as of v0.1.0):
 
-- **Server-side `LS @stage`** — engine exposes file listing, no SQL
-  command routed.
 - **`AT (STATEMENT => 'id')`** — statement-id-keyed time travel; today
   only OFFSET and TIMESTAMP work.
 - **Real cron timezone propagation in `SHOW TASKS`** — current schedule
