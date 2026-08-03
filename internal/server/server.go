@@ -42,9 +42,10 @@ type Server struct {
 	tlsConfig  *tls.Config
 	certPath   string
 
-	// resetMu serializes POST /_miniflake/reset so callers never observe a
-	// half-wiped server (same idea as ministack's reset lock).
-	resetMu sync.Mutex
+	// stateMu gates access to shared MiniFlake state the same way ministack
+	// serializes /_ministack/reset: exclusive Lock for reset, RLock for every
+	// other request so a wipe never overlaps with a query.
+	stateMu sync.RWMutex
 }
 
 // New creates a Server. Call ListenAndServe to start it.
@@ -89,10 +90,32 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", host, port),
-		Handler: mux,
+		Handler: s.withStateLock(mux),
 	}
 
 	return s
+}
+
+// withStateLock wraps the serve mux so POST /_miniflake/reset takes an
+// exclusive lock while every other request (except health) takes a shared
+// one. Health stays unlocked so liveness checks still work during a wipe.
+func (s *Server) withStateLock(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_miniflake/health":
+			next.ServeHTTP(w, r)
+			return
+		case "/_miniflake/reset":
+			s.stateMu.Lock()
+			defer s.stateMu.Unlock()
+			next.ServeHTTP(w, r)
+			return
+		default:
+			s.stateMu.RLock()
+			defer s.stateMu.RUnlock()
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // ListenAndServe starts the server (blocking). When TLS is enabled (see
@@ -744,7 +767,8 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 // handleReset implements POST /_miniflake/reset. It wipes DuckDB user objects
 // and in-process subsystem state so CI can isolate runs without restarting
-// the process. GET and other methods return 405.
+// the process. GET and other methods return 405. The exclusive state lock is
+// taken by withStateLock before this handler runs.
 func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
@@ -754,9 +778,6 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 		errorResponse(w, http.StatusServiceUnavailable, "503", "orchestrator not configured")
 		return
 	}
-
-	s.resetMu.Lock()
-	defer s.resetMu.Unlock()
 
 	if err := s.orchestrator.Reset(r.Context()); err != nil {
 		errorResponse(w, http.StatusInternalServerError, "500", err.Error())

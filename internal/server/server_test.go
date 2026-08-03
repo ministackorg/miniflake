@@ -142,6 +142,21 @@ func TestReset_WithoutOrchestrator(t *testing.T) {
 	}
 }
 
+func TestStateLock_HealthStaysUpDuringExclusiveLock(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	// Simulate an in-flight reset holding the exclusive lock.
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/_miniflake/health", nil)
+	s.httpServer.Handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health should stay unlocked during reset, got %d", w.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Method validation
 // ---------------------------------------------------------------------------
