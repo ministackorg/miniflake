@@ -16,10 +16,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 - **`SHOW TASKS` exposes the cron timezone.** For
-  `USING CRON ... <tz>`, `SHOW TASKS` now has a `timezone` column with
-  the IANA zone the scheduler uses. Bad timezones fail at `CREATE TASK`.
-  (MiniFlake already ships extra task columns beyond Snowflake's list;
-  this one sits next to `last_run_at` / `next_run_at`.)
+  `USING CRON ... <tz>`, `SHOW TASKS` appends a `timezone` column with
+  the IANA zone the scheduler uses (after the existing columns, so
+  positional readers of `state` stay stable). Bad timezones fail at
+  `CREATE TASK`.
 
 ## [0.1.2] - 2026-08-03
 

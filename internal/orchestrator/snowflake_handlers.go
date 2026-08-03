@@ -154,13 +154,15 @@ func (o *Orchestrator) handleShowTasks(sess *session.Session, scope string) (*Qu
 		}
 		rows = append(rows, []interface{}{
 			t.CreatedAt.UTC(), t.Name, t.DatabaseName, t.SchemaName,
-			t.Warehouse, t.Schedule, t.Timezone, string(t.State), t.Predecessor, lastRun, nextRun,
+			t.Warehouse, t.Schedule, string(t.State), t.Predecessor, lastRun, nextRun,
+			t.Timezone,
 		})
 	}
 	return &QueryResult{
 		Columns: []string{
 			"created_on", "name", "database_name", "schema_name",
-			"warehouse", "schedule", "timezone", "state", "predecessor", "last_run_at", "next_run_at",
+			"warehouse", "schedule", "state", "predecessor", "last_run_at", "next_run_at",
+			"timezone",
 		},
 		Rows:          rows,
 		StatementType: "SHOW",
