@@ -7,11 +7,26 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.2] - 2026-08-03
 
-The stage command set (`LIST`/`LS`, `REMOVE`/`RM`, stage-reference
-unification and the `CREATE STAGE` clause fixes) was contributed by
-@fedemeister in #7 and #8. Path-traversal containment for `COPY INTO`
-unload, literal-prefix parity and the marker-routing refactor were added
-by the maintainers on top.
+### Added
+- **`REMOVE @stage` / `RM @stage`.** Deletes staged files for named,
+  user (`@~`) and table (`@%table`) stages, honouring subpath and
+  `PATTERN` filters, and returning Snowflake's `name, result` columns.
+  Contributed by @fedemeister.
+- **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
+  user (`@~`), and table (`@%table`) stages, including qualified refs
+  (`@db.schema.stage`), subpath filters (`@stage/path`), and
+  `PATTERN = '<regex>'`. Wrapped by the rewriter in a marker and answered
+  from the stage manager (DuckDB has no `@stage` concept), the same
+  routing PUT/GET/COPY INTO use. Returns `name, size, md5, last_modified`
+  matching real Snowflake output.Contributed by @fedemeister.
+
+  `PATTERN` matches against the whole relative path, as Snowflake does,
+  so `'a[.]csv'` does not match `dir/a.csv`; lead with `.*` to match
+  anywhere. MD5 is computed only for `LIST`/`LS`, keeping the
+  `ListFiles` path used by `COPY INTO` / `GET` free of hashing. Stages
+  whose backing directory is missing, and files removed concurrently,
+  list as absent instead of failing the statement. Contributed by
+  @fedemeister.
 
 ### Fixed
 - **`CREATE STAGE IF NOT EXISTS` and `CREATE OR REPLACE STAGE`.** Both
@@ -27,37 +42,19 @@ by the maintainers on top.
   now resolved in one place for every statement that takes one, so
   `COPY INTO`, `LIST`, `REMOVE`, `PUT` and `GET` agree on what a
   reference means. `PUT` and `GET` gain qualified, `@~` and `@%table`
-  references as a result.
+  references as a result.Contributed by @fedemeister.
 - **Stage paths can no longer escape their stage.** A reference such as
   `@s/../../etc` addressed files outside the stage directory, because
   `filepath.Join` cleans `../` segments instead of rejecting them. The
   containment check (`stage.ResolveInStage`) is now shared by every
   statement that writes through a stage path — `PUT`, `GET`, `REMOVE` and
   `COPY INTO` unload — closing the remaining `COPY INTO @s/../../x` write
-  escape (issue #3).
+  escape.Contributed by @fedemeister.
 - **`@stage/<path>` is a literal prefix.** Subpath filtering matched whole
   path components only; Snowflake treats the path as a raw string prefix
   ("names that begin with a common string"), so `@stage/data` now also
-  matches `database.csv`, matching real Snowflake.
-
-### Added
-- **`REMOVE @stage` / `RM @stage`.** Deletes staged files for named,
-  user (`@~`) and table (`@%table`) stages, honouring subpath and
-  `PATTERN` filters, and returning Snowflake's `name, result` columns.
-- **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
-  user (`@~`), and table (`@%table`) stages, including qualified refs
-  (`@db.schema.stage`), subpath filters (`@stage/path`), and
-  `PATTERN = '<regex>'`. Wrapped by the rewriter in a marker and answered
-  from the stage manager (DuckDB has no `@stage` concept), the same
-  routing PUT/GET/COPY INTO use. Returns `name, size, md5, last_modified`
-  matching real Snowflake output.
-
-  `PATTERN` matches against the whole relative path, as Snowflake does,
-  so `'a[.]csv'` does not match `dir/a.csv`; lead with `.*` to match
-  anywhere. MD5 is computed only for `LIST`/`LS`, keeping the
-  `ListFiles` path used by `COPY INTO` / `GET` free of hashing. Stages
-  whose backing directory is missing, and files removed concurrently,
-  list as absent instead of failing the statement.
+  matches `database.csv`, matching real Snowflake. Contributed by
+  @fedemeister.
 
 ## [0.1.1] - 2026-07-29
 
@@ -144,6 +141,6 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
-[Unreleased]: https://github.com/ministackorg/miniflake/compare/v0.1.1...HEAD
+[0.1.2]: https://github.com/ministackorg/miniflake/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ministackorg/miniflake/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ministackorg/miniflake/releases/tag/v0.1.0
