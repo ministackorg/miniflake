@@ -1155,6 +1155,9 @@ func TestResetEndpoint(t *testing.T) {
 
 	execSQL(t, db, "CREATE OR REPLACE TABLE reset_ci_probe (id INT)")
 	execSQL(t, db, "INSERT INTO reset_ci_probe VALUES (1)")
+	execSQL(t, db, "CREATE SCHEMA IF NOT EXISTS probe_ci_sch")
+	execSQL(t, db, "CREATE TABLE probe_ci_sch.t (id INT)")
+	execSQL(t, db, "CREATE DATABASE IF NOT EXISTS probe_reset_db")
 
 	resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/_miniflake/reset", testPort), "application/json", nil)
 	if err != nil {
@@ -1173,6 +1176,11 @@ func TestResetEndpoint(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected reset_ci_probe to be gone after /_miniflake/reset")
 	}
+
+	// Second CI pass: schema and database must be creatable again (no leftovers).
+	execSQL(t, db2, "CREATE SCHEMA probe_ci_sch")
+	execSQL(t, db2, "CREATE TABLE probe_ci_sch.t (id INT)")
+	execSQL(t, db2, "CREATE DATABASE probe_reset_db")
 
 	execSQL(t, db2, "CREATE TABLE reset_ci_probe (id INT)")
 	execSQL(t, db2, "INSERT INTO reset_ci_probe VALUES (7)")

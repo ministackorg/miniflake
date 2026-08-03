@@ -77,7 +77,8 @@ func New(
 
 // Reset wipes in-process subsystem state and DuckDB user objects so CI can
 // start a clean run without restarting the process. Mirrors ministack's
-// POST /_ministack/reset.
+// POST /_ministack/reset. Catalog state matches a fresh process boot
+// (Catalog.Init only): no MINIFLAKE/MAIN fixture.
 func (o *Orchestrator) Reset(ctx context.Context) error {
 	if o.engine != nil {
 		if err := o.engine.Reset(ctx); err != nil {
@@ -86,9 +87,6 @@ func (o *Orchestrator) Reset(ctx context.Context) error {
 	}
 	if o.catalog != nil {
 		o.catalog.Reset()
-		// Match testOrchestrator / typical session defaults.
-		_ = o.catalog.CreateDatabase("MINIFLAKE", "SYSADMIN")
-		_ = o.catalog.CreateSchema("MINIFLAKE", "MAIN", "SYSADMIN")
 	}
 	if o.stageMgr != nil {
 		if err := o.stageMgr.Reset(); err != nil {

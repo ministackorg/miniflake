@@ -99,6 +99,8 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 // withStateLock wraps the serve mux so POST /_miniflake/reset takes an
 // exclusive lock while every other request (except health) takes a shared
 // one. Health stays unlocked so liveness checks still work during a wipe.
+// Non-POST methods on /_miniflake/reset do not take the exclusive lock
+// (they only need to return 405).
 func (s *Server) withStateLock(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -106,6 +108,10 @@ func (s *Server) withStateLock(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		case "/_miniflake/reset":
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
 			s.stateMu.Lock()
 			defer s.stateMu.Unlock()
 			next.ServeHTTP(w, r)
