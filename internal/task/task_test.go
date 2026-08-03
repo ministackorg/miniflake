@@ -2,6 +2,7 @@ package task
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,19 +96,7 @@ func TestScheduleParsing(t *testing.T) {
 	}
 }
 
-func TestScheduleTimezone(t *testing.T) {
-	if got := ScheduleTimezone("USING CRON 0 9 * * * America/Los_Angeles"); got != "America/Los_Angeles" {
-		t.Errorf("got %q", got)
-	}
-	if got := ScheduleTimezone("USING CRON 0 * * * *"); got != "UTC" {
-		t.Errorf("cron without tz: got %q want UTC", got)
-	}
-	if got := ScheduleTimezone("5 MINUTE"); got != "" {
-		t.Errorf("minute schedule: got %q want empty", got)
-	}
-}
-
-func TestShowTasksPropagatesTimezone(t *testing.T) {
+func TestShowTasksKeepsTimezoneInSchedule(t *testing.T) {
 	s := NewScheduler(func(ctx context.Context, sql string) error { return nil })
 	if err := s.CreateTask("db", "public", "tz_task", "SELECT 1",
 		"USING CRON 0 9 * * * America/Los_Angeles", "wh", "", ""); err != nil {
@@ -117,9 +106,9 @@ func TestShowTasksPropagatesTimezone(t *testing.T) {
 	if len(infos) != 1 {
 		t.Fatalf("ShowTasks: %+v", infos)
 	}
-	if infos[0].Timezone != "America/Los_Angeles" {
-		t.Errorf("Timezone=%q, want America/Los_Angeles (got raw schedule %q)",
-			infos[0].Timezone, infos[0].Schedule)
+	if !strings.Contains(infos[0].Schedule, "America/Los_Angeles") {
+		t.Errorf("schedule=%q, want America/Los_Angeles inside schedule (Snowflake has no timezone column)",
+			infos[0].Schedule)
 	}
 }
 

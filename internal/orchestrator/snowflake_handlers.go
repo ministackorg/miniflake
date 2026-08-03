@@ -486,7 +486,7 @@ var defaultSessionParameters = []snowflakeParameter{
 	{"QUOTED_IDENTIFIERS_IGNORE_CASE", "false", "false", "", "case-insensitive quoted identifiers", "BOOLEAN"},
 	{"ROWS_PER_RESULTSET", "0", "0", "", "max rows per result set (0 = unlimited)", "NUMBER"},
 	{"SIMULATED_DATA_SHARING_CONSUMER", "", "", "", "simulated data sharing consumer", "STRING"},
-	{"STATEMENT_TIMEOUT_IN_SECONDS", "0", "0", "", "statement timeout in seconds (0 = none)", "NUMBER"},
+	{"STATEMENT_TIMEOUT_IN_SECONDS", "172800", "172800", "", "statement timeout in seconds", "NUMBER"},
 	{"TIMESTAMP_LTZ_OUTPUT_FORMAT", "", "", "", "display format for TIMESTAMP_LTZ", "STRING"},
 	{"TIMESTAMP_NTZ_OUTPUT_FORMAT", "YYYY-MM-DD HH24:MI:SS.FF3", "YYYY-MM-DD HH24:MI:SS.FF3", "", "display format for TIMESTAMP_NTZ", "STRING"},
 	{"TIMESTAMP_OUTPUT_FORMAT", "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM", "", "display format for timestamps", "STRING"},

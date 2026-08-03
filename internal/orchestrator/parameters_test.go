@@ -43,6 +43,11 @@ func TestHandleShowParameters(t *testing.T) {
 				t.Errorf("TIMEZONE type=%v want STRING", row[5])
 			}
 		}
+		if key == "STATEMENT_TIMEOUT_IN_SECONDS" {
+			if row[1] != "172800" || row[2] != "172800" {
+				t.Errorf("STATEMENT_TIMEOUT_IN_SECONDS value/default=%v/%v want 172800", row[1], row[2])
+			}
+		}
 	}
 	if !foundTZ {
 		t.Error("TIMEZONE missing from SHOW PARAMETERS")

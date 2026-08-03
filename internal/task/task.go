@@ -44,7 +44,6 @@ type TaskInfo struct {
 	DatabaseName string
 	SchemaName   string
 	Schedule     string
-	Timezone     string // IANA tz from USING CRON … <tz>; empty for MINUTE schedules
 	State        TaskState
 	Warehouse    string
 	Predecessor  string
@@ -195,7 +194,6 @@ func (s *Scheduler) ShowTasks(db, schema string) []TaskInfo {
 				DatabaseName: t.DatabaseName,
 				SchemaName:   t.SchemaName,
 				Schedule:     t.Schedule,
-				Timezone:     ScheduleTimezone(t.Schedule),
 				State:        t.State,
 				Warehouse:    t.Warehouse,
 				Predecessor:  t.Predecessor,
@@ -418,17 +416,6 @@ func ParseSchedule(schedule string) (*ScheduleInterval, error) {
 	}
 
 	return nil, fmt.Errorf("unrecognized schedule format: %q", schedule)
-}
-
-// ScheduleTimezone returns the IANA timezone from a USING CRON schedule,
-// or "" for minute schedules / bad input. Used by the scheduler; the
-// timezone is not a SHOW TASKS column (Snowflake keeps it in schedule).
-func ScheduleTimezone(schedule string) string {
-	si, err := ParseSchedule(schedule)
-	if err != nil {
-		return ""
-	}
-	return si.Timezone
 }
 
 // nextRunTime computes the next run time based on the schedule and the current
