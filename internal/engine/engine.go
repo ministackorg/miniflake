@@ -231,8 +231,8 @@ func (e *Engine) ExecNoResult(ctx context.Context, query string, args ...interfa
 // AttachDatabase attaches an additional DuckDB database file under the given
 // logical name. The file is stored in the engine's data directory.
 func (e *Engine) AttachDatabase(name string) error {
-	e.mu.RLock()
-	defer e.mu.RUnlock()
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
 	dbPath := e.dataDir + "/" + name + ".duckdb"
 	query := fmt.Sprintf("ATTACH IF NOT EXISTS '%s' AS \"%s\"", dbPath, name)
