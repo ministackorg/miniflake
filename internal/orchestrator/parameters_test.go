@@ -15,7 +15,7 @@ func TestHandleShowParameters(t *testing.T) {
 	if !handled {
 		t.Fatal("expected handled")
 	}
-	wantCols := []string{"key", "value", "default", "level", "description"}
+	wantCols := []string{"key", "value", "default", "level", "description", "type"}
 	if len(result.Columns) != len(wantCols) {
 		t.Fatalf("columns=%v", result.Columns)
 	}
@@ -38,6 +38,9 @@ func TestHandleShowParameters(t *testing.T) {
 			}
 			if row[2] != "America/Los_Angeles" {
 				t.Errorf("TIMEZONE default=%v", row[2])
+			}
+			if row[5] != "STRING" {
+				t.Errorf("TIMEZONE type=%v want STRING", row[5])
 			}
 		}
 	}

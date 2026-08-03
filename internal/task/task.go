@@ -414,19 +414,15 @@ func ParseSchedule(schedule string) (*ScheduleInterval, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid cron schedule: %w", err)
 		}
-		tzName := loc.String()
-		if parts := strings.Fields(cronPart); len(parts) > 5 {
-			tzName = parts[5]
-		}
-		return &ScheduleInterval{Cron: cronPart, Timezone: tzName}, nil
+		return &ScheduleInterval{Cron: cronPart, Timezone: loc.String()}, nil
 	}
 
 	return nil, fmt.Errorf("unrecognized schedule format: %q", schedule)
 }
 
 // ScheduleTimezone returns the IANA timezone from a USING CRON schedule,
-// or "" for minute schedules / bad input. SHOW TASKS uses this so the
-// timezone is a real column instead of buried only inside schedule.
+// or "" for minute schedules / bad input. Used by the scheduler; the
+// timezone is not a SHOW TASKS column (Snowflake keeps it in schedule).
 func ScheduleTimezone(schedule string) string {
 	si, err := ParseSchedule(schedule)
 	if err != nil {

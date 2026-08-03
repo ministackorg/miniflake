@@ -741,14 +741,19 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
-	tzCol := -1
-	for i, c := range cols {
+	for _, c := range cols {
 		if strings.EqualFold(c, "timezone") {
-			tzCol = i
+			t.Fatalf("SHOW TASKS must not expose a timezone column (Snowflake keeps it in schedule); cols=%v", cols)
 		}
 	}
-	if tzCol < 0 {
-		t.Fatalf("SHOW TASKS missing timezone column; cols=%v", cols)
+	schedCol := -1
+	for i, c := range cols {
+		if strings.EqualFold(c, "schedule") {
+			schedCol = i
+		}
+	}
+	if schedCol < 0 {
+		t.Fatalf("SHOW TASKS missing schedule column; cols=%v", cols)
 	}
 	found := false
 	foundTZ := false
@@ -767,9 +772,9 @@ func TestCreateAndShowTask(t *testing.T) {
 		}
 		if strings.EqualFold(name, "tz_task") {
 			foundTZ = true
-			tz, _ := vals[tzCol].(string)
-			if tz != "America/Los_Angeles" {
-				t.Errorf("tz_task timezone=%q, want America/Los_Angeles", tz)
+			sched, _ := vals[schedCol].(string)
+			if !strings.Contains(sched, "America/Los_Angeles") {
+				t.Errorf("tz_task schedule=%q, want America/Los_Angeles inside schedule", sched)
 			}
 		}
 	}
@@ -778,6 +783,13 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 	if !foundTZ {
 		t.Error("tz_task not in SHOW TASKS")
+	}
+
+	// Bad IANA zone must fail at CREATE TASK.
+	_, err = db.Exec("CREATE TASK bad_tz WAREHOUSE = wh SCHEDULE = 'USING CRON 0 9 * * * Atlantis' AS SELECT 1")
+	if err == nil {
+		t.Error("expected CREATE TASK with bad timezone to fail")
+		execSQL(t, db, "DROP TASK IF EXISTS bad_tz")
 	}
 
 	// EXECUTE TASK runs the body once.
@@ -804,9 +816,14 @@ func TestShowParameters(t *testing.T) {
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
-	wantCols := []string{"key", "value", "default", "level", "description"}
+	wantCols := []string{"key", "value", "default", "level", "description", "type"}
 	if len(cols) != len(wantCols) {
-		t.Fatalf("cols=%v", cols)
+		t.Fatalf("cols=%v want %v", cols, wantCols)
+	}
+	for i, c := range wantCols {
+		if !strings.EqualFold(cols[i], c) {
+			t.Errorf("col[%d]=%q want %q", i, cols[i], c)
+		}
 	}
 
 	found := false
@@ -824,6 +841,9 @@ func TestShowParameters(t *testing.T) {
 			found = true
 			if vals[1] != "America/Los_Angeles" {
 				t.Errorf("TIMEZONE value=%v", vals[1])
+			}
+			if vals[5] != "STRING" {
+				t.Errorf("TIMEZONE type=%v want STRING", vals[5])
 			}
 		}
 	}

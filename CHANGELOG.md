@@ -9,17 +9,16 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 - **`SHOW PARAMETERS`.** Returns a default session parameter catalog
-  (`key`, `value`, `default`, `level`, `description`) so drivers that
-  probe config at connect time get a real result set. Supports `LIKE`
-  and `IN SESSION` / `IN ACCOUNT`. `ALTER SESSION` is not wired yet, so
-  value always matches default.
+  (`key`, `value`, `default`, `level`, `description`, `type`) so drivers
+  that probe config at connect time get a real result set. Supports
+  `LIKE` and `IN SESSION` / `IN ACCOUNT`. `ALTER SESSION` is not wired
+  yet, so value always matches default.
 
-### Fixed
-- **`SHOW TASKS` exposes the cron timezone.** For
-  `USING CRON ... <tz>`, `SHOW TASKS` appends a `timezone` column with
-  the IANA zone the scheduler uses (after the existing columns, so
-  positional readers of `state` stay stable). Bad timezones fail at
-  `CREATE TASK`.
+### Changed
+- **`CREATE TASK` validates cron timezones.** Invalid IANA zones in
+  `USING CRON ... <tz>` fail at create time. The timezone stays inside
+  the `schedule` string (Snowflake has no separate `timezone` column on
+  `SHOW TASKS`).
 
 ## [0.1.2] - 2026-08-03
 
