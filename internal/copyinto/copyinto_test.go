@@ -216,6 +216,34 @@ func TestExecuteUnload(t *testing.T) {
 	}
 }
 
+// COPY INTO @stage/../../x FROM t must not write outside the stage directory.
+// filepath.Join would clean the "../" segments and let the unload escape
+// (issue #3); ExecuteUnload routes the subpath through stage.ResolveInStage.
+func TestExecuteUnloadCannotEscapeStage(t *testing.T) {
+	eng, mgr, _ := setupTestEnv(t)
+	ctx := context.Background()
+
+	_, _ = eng.ExecNoResult(ctx, "CREATE TABLE esc (id INTEGER)")
+	_, _ = eng.ExecNoResult(ctx, "INSERT INTO esc VALUES (1)")
+
+	if err := mgr.CreateStage("DB", "PUBLIC", "ESCSTAGE", stage.StageInternal, ""); err != nil {
+		t.Fatalf("create stage: %v", err)
+	}
+	meta, _ := mgr.GetStage("DB", "PUBLIC", "ESCSTAGE")
+
+	executor := NewExecutor(eng.ExecNoResult, eng.Execute, mgr)
+	if _, err := executor.ExecuteUnload(ctx, "esc", meta, "../../escaped", DefaultParquet(), CopyOptions{}); err == nil {
+		t.Fatal("expected ExecuteUnload to reject a subpath that escapes the stage")
+	}
+
+	// The rejection happens before any directory is created, so nothing may
+	// exist at the escaped location.
+	escaped := filepath.Join(meta.LocalPath, "..", "..", "escaped")
+	if _, statErr := os.Stat(escaped); !os.IsNotExist(statErr) {
+		t.Fatalf("unload created something outside the stage at %s", escaped)
+	}
+}
+
 func TestOnErrorContinue(t *testing.T) {
 	eng, mgr, _ := setupTestEnv(t)
 	ctx := context.Background()

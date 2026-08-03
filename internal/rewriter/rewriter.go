@@ -20,6 +20,7 @@ func init() {
 		rewriteUseStatements,
 		rewritePutGet,
 		rewriteCopyInto,
+		rewriteStageCommands,
 		rewriteStreams,
 		rewriteTasks,
 		rewritePipes,

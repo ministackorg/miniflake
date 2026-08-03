@@ -121,7 +121,7 @@ func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sq
 	}
 
 	// Step 6: route queries (SELECT, SHOW, DESCRIBE, WITH, EXPLAIN).
-	if result, handled, err := o.handleQuery(ctx, sess, rewritten, upper); handled {
+	if result, handled, err := o.handleQuery(ctx, rewritten, upper); handled {
 		return result, err
 	}
 
@@ -155,6 +155,8 @@ var (
 	reMarkerCopyInto     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_COPY_INTO\s+(.*?)\s*\*/`)
 	reMarkerPut          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_PUT\s+(.*?)\s*\*/`)
 	reMarkerGet          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_GET\s+(.*?)\s*\*/`)
+	reMarkerList         = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_LIST\s+(.*?)\s*\*/`)
+	reMarkerRemove       = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_REMOVE\s+(.*?)\s*\*/`)
 	reMarkerCreateStream = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_STREAM\s+(.*?)\s*\*/`)
 	reMarkerDropStream   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_STREAM\s+(\S+)\s+([01])\s*\*/`)
 	reMarkerShowStreams  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_STREAMS\s*(\S*)\s*\*/`)
@@ -234,6 +236,16 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 	// GET
 	if m := reMarkerGet.FindStringSubmatch(sql); m != nil {
 		return o.handleGet(sess, m[1])
+	}
+
+	// LIST / LS
+	if m := reMarkerList.FindStringSubmatch(sql); m != nil {
+		return o.handleListStage(sess, m[1])
+	}
+
+	// REMOVE / RM
+	if m := reMarkerRemove.FindStringSubmatch(sql); m != nil {
+		return o.handleRemoveStage(sess, m[1])
 	}
 
 	// CREATE STREAM
@@ -718,17 +730,7 @@ func (o *Orchestrator) handleTransaction(ctx context.Context, sql, upper string)
 // Query routing (SELECT, SHOW, DESCRIBE, WITH, EXPLAIN)
 // ---------------------------------------------------------------------------
 
-func (o *Orchestrator) handleQuery(ctx context.Context, sess *session.Session, sql, upper string) (*QueryResult, bool, error) {
-	// LIST/LS and REMOVE/RM against a stage return result sets, but the stage
-	// lives in the stage manager, not DuckDB. Intercept both before the generic
-	// bucket below forwards them to the engine.
-	if result, handled, err := o.handleListStage(sess, sql); handled {
-		return result, true, err
-	}
-	if result, handled, err := o.handleRemoveStage(sess, sql); handled {
-		return result, true, err
-	}
-
+func (o *Orchestrator) handleQuery(ctx context.Context, sql, upper string) (*QueryResult, bool, error) {
 	isQuery := strings.HasPrefix(upper, "SELECT") ||
 		strings.HasPrefix(upper, "SHOW") ||
 		strings.HasPrefix(upper, "DESCRIBE") ||

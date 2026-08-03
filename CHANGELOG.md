@@ -6,6 +6,14 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-03
+
+The stage command set (`LIST`/`LS`, `REMOVE`/`RM`, stage-reference
+unification and the `CREATE STAGE` clause fixes) was contributed by
+@fedemeister in #7 and #8. Path-traversal containment for `COPY INTO`
+unload, literal-prefix parity and the marker-routing refactor were added
+by the maintainers on top.
+
 ### Fixed
 - **`CREATE STAGE IF NOT EXISTS` and `CREATE OR REPLACE STAGE`.** Both
   clauses were parsed and then ignored, so either form failed once the
@@ -23,7 +31,15 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   references as a result.
 - **Stage paths can no longer escape their stage.** A reference such as
   `@s/../../etc` addressed files outside the stage directory, because
-  `filepath.Join` cleans `../` segments instead of rejecting them.
+  `filepath.Join` cleans `../` segments instead of rejecting them. The
+  containment check (`stage.ResolveInStage`) is now shared by every
+  statement that writes through a stage path — `PUT`, `GET`, `REMOVE` and
+  `COPY INTO` unload — closing the remaining `COPY INTO @s/../../x` write
+  escape (issue #3).
+- **`@stage/<path>` is a literal prefix.** Subpath filtering matched whole
+  path components only; Snowflake treats the path as a raw string prefix
+  ("names that begin with a common string"), so `@stage/data` now also
+  matches `database.csv`, matching real Snowflake.
 
 ### Added
 - **`REMOVE @stage` / `RM @stage`.** Deletes staged files for named,
@@ -32,10 +48,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
   user (`@~`), and table (`@%table`) stages, including qualified refs
   (`@db.schema.stage`), subpath filters (`@stage/path`), and
-  `PATTERN = '<regex>'`. Routed before the generic query path (which
-  previously forwarded `LIST` straight to DuckDB and broke on `@stage`
-  syntax). Returns `name, size, md5, last_modified` matching real
-  Snowflake output.
+  `PATTERN = '<regex>'`. Wrapped by the rewriter in a marker and answered
+  from the stage manager (DuckDB has no `@stage` concept), the same
+  routing PUT/GET/COPY INTO use. Returns `name, size, md5, last_modified`
+  matching real Snowflake output.
 
   `PATTERN` matches against the whole relative path, as Snowflake does,
   so `'a[.]csv'` does not match `dir/a.csv`; lead with `.*` to match

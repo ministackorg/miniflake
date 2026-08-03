@@ -281,7 +281,16 @@ func escapePath(p string) string {
 func (e *Executor) ExecuteUnload(ctx context.Context, tableName string, meta *stage.StageMeta, subPath string, format FileFormat, options CopyOptions) ([]CopyResult, error) {
 	destDir := meta.LocalPath
 	if subPath != "" {
-		destDir = filepath.Join(destDir, subPath)
+		// Contain the subpath inside the stage. filepath.Join alone cleans
+		// "../" segments rather than rejecting them, so COPY INTO
+		// @stage/../../x FROM t would otherwise write outside the stage
+		// directory (issue #3). ResolveInStage is the same containment check
+		// PUT, GET and REMOVE use.
+		resolved, resErr := stage.ResolveInStage(meta, subPath)
+		if resErr != nil {
+			return nil, fmt.Errorf("copyinto: %w", resErr)
+		}
+		destDir = resolved
 		if mkErr := os.MkdirAll(destDir, 0o755); mkErr != nil {
 			return nil, fmt.Errorf("copyinto: create dest dir: %w", mkErr)
 		}

@@ -131,7 +131,7 @@ func (m *Manager) PutFile(db, schema, stageName, localPath, destPath string) err
 // PutMetaFile copies a local file into an already-resolved stage (named, user,
 // or table), mirroring ListMetaFiles.
 func (m *Manager) PutMetaFile(meta *StageMeta, localPath, destPath string) error {
-	dest, err := resolveInStage(meta, destPath)
+	dest, err := ResolveInStage(meta, destPath)
 	if err != nil {
 		return err
 	}
@@ -153,7 +153,7 @@ func (m *Manager) GetFile(db, schema, stageName, srcPath, localPath string) erro
 // GetMetaFile copies a file out of an already-resolved stage (named, user, or
 // table), mirroring ListMetaFiles.
 func (m *Manager) GetMetaFile(meta *StageMeta, srcPath, localPath string) error {
-	src, err := resolveInStage(meta, srcPath)
+	src, err := ResolveInStage(meta, srcPath)
 	if err != nil {
 		return err
 	}
@@ -165,8 +165,10 @@ func (m *Manager) GetMetaFile(meta *StageMeta, srcPath, localPath string) error 
 
 // ListOptions controls optional filtering and checksum behaviour for listings.
 type ListOptions struct {
-	// Prefix keeps files whose relative path equals prefix or lives under
-	// prefix/ (Snowflake `@stage/path` semantics). Empty means no filter.
+	// Prefix keeps files whose relative path begins with prefix, matching
+	// Snowflake's literal-prefix `@stage/path` semantics: a raw string prefix
+	// on the file path, not restricted to whole path components (so `data`
+	// also matches `database.csv`). Empty means no filter.
 	Prefix string
 	// Pattern is a filepath glob matched against the file basename. Used by
 	// COPY INTO / GET. Empty means no filter.
@@ -195,7 +197,10 @@ func (m *Manager) ListFilesWithOptions(db, schema, stageName string, opts ListOp
 
 // ListMetaFiles lists files under an already-resolved stage (named, user, or table).
 func (m *Manager) ListMetaFiles(meta *StageMeta, opts ListOptions) ([]FileInfo, error) {
-	prefix := strings.Trim(filepath.ToSlash(opts.Prefix), "/")
+	// Trim only a leading slash (left over from the `@stage/…` split); keep any
+	// trailing slash so `@stage/data/` still scopes to that folder while
+	// `@stage/data` is the broader literal prefix Snowflake documents.
+	prefix := strings.TrimPrefix(filepath.ToSlash(opts.Prefix), "/")
 
 	var re *regexp.Regexp
 	if opts.Regex != "" {
@@ -230,7 +235,7 @@ func (m *Manager) ListMetaFiles(meta *StageMeta, opts ListOptions) ([]FileInfo, 
 		}
 		rel = filepath.ToSlash(rel)
 
-		if prefix != "" && rel != prefix && !strings.HasPrefix(rel, prefix+"/") {
+		if prefix != "" && !strings.HasPrefix(rel, prefix) {
 			return nil
 		}
 		if opts.Pattern != "" {
@@ -303,7 +308,7 @@ func (m *Manager) RemoveFile(db, schema, stageName, path string) error {
 // RemoveMetaFile removes a file under an already-resolved stage (named, user,
 // or table), mirroring ListMetaFiles.
 func (m *Manager) RemoveMetaFile(meta *StageMeta, path string) error {
-	target, err := resolveInStage(meta, path)
+	target, err := ResolveInStage(meta, path)
 	if err != nil {
 		return err
 	}
@@ -313,11 +318,15 @@ func (m *Manager) RemoveMetaFile(meta *StageMeta, path string) error {
 	return nil
 }
 
-// resolveInStage joins a stage-relative path onto the stage root and refuses
+// ResolveInStage joins a stage-relative path onto the stage root and refuses
 // anything that climbs back out of it. filepath.Join cleans "../" segments
 // rather than rejecting them, so without this a reference like
 // "@s/../../secret" would address files outside the stage entirely.
-func resolveInStage(meta *StageMeta, path string) (string, error) {
+//
+// Exported so every subsystem that turns a stage reference into a filesystem
+// path (PUT, GET, REMOVE and COPY INTO) shares one containment check and they
+// cannot drift apart on it.
+func ResolveInStage(meta *StageMeta, path string) (string, error) {
 	target := filepath.Join(meta.LocalPath, filepath.FromSlash(path))
 	rel, err := filepath.Rel(meta.LocalPath, target)
 	if err != nil {
