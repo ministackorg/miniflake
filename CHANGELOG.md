@@ -6,7 +6,29 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- **`CREATE STAGE IF NOT EXISTS` and `CREATE OR REPLACE STAGE`.** Both
+  clauses were parsed and then ignored, so either form failed once the
+  stage existed and no setup script could be re-run. `OR REPLACE` now
+  recreates the stage and discards its files, as in Snowflake.
+- **`COPY INTO` from an unqualified stage.** `COPY INTO t FROM @my_stage`
+  built its stage key from empty database and schema parts, looking up
+  `..MY_STAGE` and always failing with `stage does not exist`. Only the
+  fully qualified `@db.schema.stage` form worked, which is why the
+  existing tests (all qualified) never caught it; the form documented in
+  this README's own Snowpipe example could not run. Stage references are
+  now resolved in one place for every statement that takes one, so
+  `COPY INTO`, `LIST`, `REMOVE`, `PUT` and `GET` agree on what a
+  reference means. `PUT` and `GET` gain qualified, `@~` and `@%table`
+  references as a result.
+- **Stage paths can no longer escape their stage.** A reference such as
+  `@s/../../etc` addressed files outside the stage directory, because
+  `filepath.Join` cleans `../` segments instead of rejecting them.
+
 ### Added
+- **`REMOVE @stage` / `RM @stage`.** Deletes staged files for named,
+  user (`@~`) and table (`@%table`) stages, honouring subpath and
+  `PATTERN` filters, and returning Snowflake's `name, result` columns.
 - **`LIST @stage` / `LS @stage`.** Server-side file listing for named,
   user (`@~`), and table (`@%table`) stages, including qualified refs
   (`@db.schema.stage`), subpath filters (`@stage/path`), and

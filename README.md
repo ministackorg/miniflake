@@ -163,6 +163,7 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | **Stages** | Internal named stages (`CREATE/DROP STAGE`) | ✅ |
 | | `PUT` / `GET` commands — server-side handler works; gosnowflake intercepts client-side | 🟡 |
 | | Stage file listing (`LS @stage`, `@~`, `@%table`, `PATTERN`) | ✅ |
+| | `REMOVE` / `RM @stage`, with subpath and `PATTERN` filters | ✅ |
 | **Streams & Tasks** | Streams — `CREATE/DROP/SHOW STREAM`, DML change-record hooks | ✅ |
 | | Tasks — `CREATE/DROP/ALTER/SHOW/EXECUTE TASK`, real cron parser, scheduler runs | ✅ |
 | **Time Travel** | `UNDROP TABLE` — snapshot on `DROP TABLE`, restored via parquet | ✅ |

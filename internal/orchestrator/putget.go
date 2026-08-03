@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/miniflakedb/miniflake/internal/session"
+	"github.com/miniflakedb/miniflake/internal/stage"
 )
 
 // PUT and GET file transfers. Real Snowflake's PUT/GET protocol uses
@@ -40,7 +41,10 @@ func (o *Orchestrator) handlePut(sess *session.Session, putSQL string) (*QueryRe
 		return nil, true, fmt.Errorf("PUT: %w", err)
 	}
 
-	stageName, destSubPath := splitStagePath(stagePath)
+	meta, destSubPath, _, err := o.resolveStage(sess, stagePath)
+	if err != nil {
+		return nil, true, fmt.Errorf("PUT: %w", err)
+	}
 	destName := filepath.Base(localPath)
 	if destSubPath != "" {
 		destName = destSubPath + "/" + destName
@@ -52,7 +56,7 @@ func (o *Orchestrator) handlePut(sess *session.Session, putSQL string) (*QueryRe
 	}
 	sourceSize := info.Size()
 
-	if err := o.stageMgr.PutFile(sess.Database, sess.Schema, stageName, localPath, destName); err != nil {
+	if err := o.stageMgr.PutMetaFile(meta, localPath, destName); err != nil {
 		return &QueryResult{
 			Columns: []string{
 				"source", "target", "source_size", "target_size",
@@ -87,15 +91,19 @@ func (o *Orchestrator) handleGet(sess *session.Session, getSQL string) (*QueryRe
 	stagePath := strings.Trim(m[1], `"'`)
 	destURL := strings.Trim(m[2], `"'`)
 
-	stageName, srcSubPath := splitStagePath(stagePath)
 	localDir, err := fileURLToPath(destURL)
 	if err != nil {
 		return nil, true, fmt.Errorf("GET: %w", err)
 	}
 
-	// Snowflake GET lists every file matching the stage path. When the
-	// source path is empty, all files in the stage are returned.
-	files, err := o.stageMgr.ListFiles(sess.Database, sess.Schema, stageName, srcSubPath)
+	meta, srcSubPath, _, err := o.resolveStage(sess, stagePath)
+	if err != nil {
+		return nil, true, fmt.Errorf("GET: %w", err)
+	}
+
+	// Snowflake GET returns every file under the stage path. When the source
+	// path is empty, all files in the stage are returned.
+	files, err := o.stageMgr.ListMetaFiles(meta, stage.ListOptions{Prefix: srcSubPath})
 	if err != nil {
 		return nil, true, fmt.Errorf("GET: %w", err)
 	}
@@ -107,7 +115,7 @@ func (o *Orchestrator) handleGet(sess *session.Session, getSQL string) (*QueryRe
 	for _, f := range files {
 		base := filepath.Base(f.Name)
 		localPath := filepath.Join(localDir, base)
-		if err := o.stageMgr.GetFile(sess.Database, sess.Schema, stageName, f.Name, localPath); err != nil {
+		if err := o.stageMgr.GetMetaFile(meta, f.Name, localPath); err != nil {
 			rows = append(rows, []interface{}{
 				f.Name, int64(0), "NONE", "ERROR", err.Error(),
 			})
@@ -139,13 +147,4 @@ func fileURLToPath(u string) (string, error) {
 		return "", err
 	}
 	return parsed.Path, nil
-}
-
-// splitStagePath splits "<stage>[/<sub/path>]" into (stage, sub).
-func splitStagePath(p string) (string, string) {
-	idx := strings.IndexByte(p, '/')
-	if idx < 0 {
-		return p, ""
-	}
-	return p[:idx], strings.TrimPrefix(p[idx+1:], "/")
 }

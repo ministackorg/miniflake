@@ -5,6 +5,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -185,6 +186,10 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 		if perr != nil {
 			return nil, true, fmt.Errorf("COPY INTO: %w", perr)
 		}
+		meta, subPath, _, rerr := o.resolveStage(sess, stagePath)
+		if rerr != nil {
+			return nil, true, fmt.Errorf("COPY INTO: %w", rerr)
+		}
 		exec := copyinto.NewExecutor(
 			o.engine.ExecNoResult,
 			o.engine.Execute,
@@ -194,9 +199,9 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 		var execErr error
 		switch direction {
 		case copyinto.LoadIntoTable:
-			results, execErr = exec.ExecuteLoad(ctx, tableName, stagePath, format, options)
+			results, execErr = exec.ExecuteLoad(ctx, tableName, meta, subPath, format, options)
 		case copyinto.UnloadToStage:
-			results, execErr = exec.ExecuteUnload(ctx, tableName, stagePath, format, options)
+			results, execErr = exec.ExecuteUnload(ctx, tableName, meta, subPath, format, options)
 		default:
 			return nil, true, fmt.Errorf("COPY INTO: unknown direction")
 		}
@@ -546,11 +551,20 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 		return ddlResult(), true, nil
 	}
 
-	// CREATE STAGE
+	// CREATE STAGE, honouring both OR REPLACE and IF NOT EXISTS. Setup scripts
+	// lean on them heavily, and without this every re-run of one fails.
 	if m := reCreateStage.FindStringSubmatch(sql); m != nil {
 		name := cleanIdent(m[3])
+		if m[1] != "" {
+			// OR REPLACE discards the existing stage and its files, as in
+			// Snowflake. A stage that isn't there yet is not an error.
+			_ = o.stageMgr.DropStage(sess.Database, sess.Schema, name)
+		}
 		err := o.stageMgr.CreateStage(sess.Database, sess.Schema, name, stage.StageInternal, "")
 		if err != nil {
+			if m[2] != "" && errors.Is(err, stage.ErrStageExists) {
+				return ddlResult(), true, nil
+			}
 			return nil, true, err
 		}
 		return ddlResult(), true, nil
@@ -705,10 +719,13 @@ func (o *Orchestrator) handleTransaction(ctx context.Context, sql, upper string)
 // ---------------------------------------------------------------------------
 
 func (o *Orchestrator) handleQuery(ctx context.Context, sess *session.Session, sql, upper string) (*QueryResult, bool, error) {
-	// LIST/LS @stage is a result-set-returning statement, but the stage lives
-	// in the stage manager, not DuckDB. Intercept before the generic bucket
-	// below forwards it to the engine.
+	// LIST/LS and REMOVE/RM against a stage return result sets, but the stage
+	// lives in the stage manager, not DuckDB. Intercept both before the generic
+	// bucket below forwards them to the engine.
 	if result, handled, err := o.handleListStage(sess, sql); handled {
+		return result, true, err
+	}
+	if result, handled, err := o.handleRemoveStage(sess, sql); handled {
 		return result, true, err
 	}
 

@@ -177,22 +177,18 @@ func parseInlineOptions(raw string) map[string]string {
 // Load: stage files -> table
 // ---------------------------------------------------------------------------
 
-// ExecuteLoad reads files from a stage and loads them into a table.
-func (e *Executor) ExecuteLoad(ctx context.Context, tableName, stagePath string, format FileFormat, options CopyOptions) ([]CopyResult, error) {
-	db, schema, stageName, filePattern := parseStagePath(stagePath)
-
-	files, err := e.stageMgr.ListFiles(db, schema, stageName, filePattern)
+// ExecuteLoad reads files from an already-resolved stage and loads them into a
+// table. The caller resolves the stage reference (see the orchestrator's
+// stageref.go) so that COPY INTO, LIST, PUT and GET all agree on which stage a
+// given reference names.
+func (e *Executor) ExecuteLoad(ctx context.Context, tableName string, meta *stage.StageMeta, subPath string, format FileFormat, options CopyOptions) ([]CopyResult, error) {
+	files, err := e.stageMgr.ListMetaFiles(meta, stage.ListOptions{Prefix: subPath})
 	if err != nil {
 		return nil, fmt.Errorf("copyinto: list stage files: %w", err)
 	}
 
 	if len(files) == 0 {
 		return nil, nil
-	}
-
-	meta, err := e.stageMgr.GetStage(db, schema, stageName)
-	if err != nil {
-		return nil, fmt.Errorf("copyinto: get stage: %w", err)
 	}
 
 	var results []CopyResult
@@ -233,7 +229,7 @@ func (e *Executor) ExecuteLoad(ctx context.Context, tableName, stagePath string,
 
 		// Purge: delete the file after successful load.
 		if options.Purge {
-			_ = e.stageMgr.RemoveFile(db, schema, stageName, f.Name)
+			_ = e.stageMgr.RemoveMetaFile(meta, f.Name)
 		}
 	}
 
@@ -282,14 +278,7 @@ func escapePath(p string) string {
 // ---------------------------------------------------------------------------
 
 // ExecuteUnload writes table data to files in a stage.
-func (e *Executor) ExecuteUnload(ctx context.Context, tableName, stagePath string, format FileFormat, options CopyOptions) ([]CopyResult, error) {
-	db, schema, stageName, subPath := parseStagePath(stagePath)
-
-	meta, err := e.stageMgr.GetStage(db, schema, stageName)
-	if err != nil {
-		return nil, fmt.Errorf("copyinto: get stage: %w", err)
-	}
-
+func (e *Executor) ExecuteUnload(ctx context.Context, tableName string, meta *stage.StageMeta, subPath string, format FileFormat, options CopyOptions) ([]CopyResult, error) {
 	destDir := meta.LocalPath
 	if subPath != "" {
 		destDir = filepath.Join(destDir, subPath)
@@ -364,26 +353,3 @@ func formatExtension(fmtType string) string {
 // ---------------------------------------------------------------------------
 // Stage path parsing
 // ---------------------------------------------------------------------------
-
-// parseStagePath splits a stage reference like "DB.SCHEMA.MYSTAGE/path/pattern"
-// into (db, schema, stageName, filePattern).
-// For a simple "MYSTAGE" it returns ("", "", "MYSTAGE", "").
-func parseStagePath(stagePath string) (db, schema, stageName, filePattern string) {
-	// Split off the file/pattern part after the stage name.
-	slashIdx := strings.Index(stagePath, "/")
-	stageRef := stagePath
-	if slashIdx >= 0 {
-		stageRef = stagePath[:slashIdx]
-		filePattern = stagePath[slashIdx+1:]
-	}
-
-	parts := strings.Split(stageRef, ".")
-	switch len(parts) {
-	case 3:
-		return strings.ToUpper(parts[0]), strings.ToUpper(parts[1]), strings.ToUpper(parts[2]), filePattern
-	case 2:
-		return "", strings.ToUpper(parts[0]), strings.ToUpper(parts[1]), filePattern
-	default:
-		return "", "", strings.ToUpper(parts[0]), filePattern
-	}
-}

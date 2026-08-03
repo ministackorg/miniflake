@@ -969,6 +969,94 @@ func TestListStage(t *testing.T) {
 	execSQL(t, db, "DROP STAGE list_test_stage")
 }
 
+// REMOVE is driven end-to-end through gosnowflake alongside LIST, since the
+// two have to agree on which files a reference names.
+func TestRemoveStage(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP STAGE IF EXISTS remove_test_stage")
+	execSQL(t, db, "CREATE STAGE remove_test_stage")
+
+	meta, err := stageMgr.GetStage("TESTDB", "PUBLIC", "remove_test_stage")
+	if err != nil {
+		t.Fatalf("resolve stage: %v", err)
+	}
+	for _, name := range []string{"gone.csv", "kept.txt"} {
+		if werr := os.WriteFile(filepath.Join(meta.LocalPath, name), []byte("x"), 0o644); werr != nil {
+			t.Fatal(werr)
+		}
+	}
+
+	rows, err := db.Query("REMOVE @remove_test_stage PATTERN = '.*[.]csv'")
+	if err != nil {
+		t.Fatalf("REMOVE: %v", err)
+	}
+	cols, _ := rows.Columns()
+	if got := strings.Join(cols, ","); got != "name,result" {
+		t.Errorf("columns = %q, want name,result", got)
+	}
+	removed := 0
+	for rows.Next() {
+		var name, result string
+		if serr := rows.Scan(&name, &result); serr != nil {
+			t.Fatalf("scan: %v", serr)
+		}
+		removed++
+		if name != "remove_test_stage/gone.csv" {
+			t.Errorf("removed unexpected file %q", name)
+		}
+		if result != "removed" {
+			t.Errorf("result = %q, want removed", result)
+		}
+	}
+	rows.Close()
+	if removed != 1 {
+		t.Fatalf("removed %d files, want 1", removed)
+	}
+
+	// Only the file the PATTERN matched may be gone.
+	if _, serr := os.Stat(filepath.Join(meta.LocalPath, "gone.csv")); !os.IsNotExist(serr) {
+		t.Error("gone.csv should have been deleted")
+	}
+	if _, serr := os.Stat(filepath.Join(meta.LocalPath, "kept.txt")); serr != nil {
+		t.Errorf("kept.txt should have survived: %v", serr)
+	}
+
+	execSQL(t, db, "DROP STAGE remove_test_stage")
+}
+
+// COPY INTO from a bare @stage reference, the form the README documents for
+// Snowpipe, has to resolve against the session database and schema.
+func TestCopyIntoBareStageRef(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP STAGE IF EXISTS copy_ref_stage")
+	execSQL(t, db, "CREATE STAGE copy_ref_stage")
+	execSQL(t, db, "CREATE OR REPLACE TABLE copy_ref_target (id INTEGER, name VARCHAR)")
+
+	meta, err := stageMgr.GetStage("TESTDB", "PUBLIC", "copy_ref_stage")
+	if err != nil {
+		t.Fatalf("resolve stage: %v", err)
+	}
+	if werr := os.WriteFile(filepath.Join(meta.LocalPath, "rows.csv"), []byte("1,alice\n2,bob\n"), 0o644); werr != nil {
+		t.Fatal(werr)
+	}
+
+	execSQL(t, db, "COPY INTO copy_ref_target FROM @copy_ref_stage FILE_FORMAT = (TYPE = 'CSV')")
+
+	var count int
+	if qerr := db.QueryRow("SELECT COUNT(*) FROM copy_ref_target").Scan(&count); qerr != nil {
+		t.Fatalf("count: %v", qerr)
+	}
+	if count != 2 {
+		t.Fatalf("loaded %d rows, want 2", count)
+	}
+
+	execSQL(t, db, "DROP STAGE copy_ref_stage")
+}
+
 func TestListUserStage(t *testing.T) {
 	db := openDB(t)
 	defer db.Close()
