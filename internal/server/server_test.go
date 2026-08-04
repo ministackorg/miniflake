@@ -176,6 +176,47 @@ func TestLogin_SuccessAndSessionFields(t *testing.T) {
 	}
 }
 
+func TestLogin_IncludesSessionInfoAndParameters(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	payload := loginRequestBody{}
+	payload.Data.AccountName = "miniflake"
+	payload.Data.LoginName = "test"
+	payload.Data.Password = "test"
+	payload.Data.DatabaseName = "TESTDB"
+	payload.Data.SchemaName = "PUBLIC"
+	buf, _ := json.Marshal(payload)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request", bytes.NewReader(buf))
+	s.handleLogin(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+
+	var resp struct {
+		Data    loginResponseData `json:"data"`
+		Success bool              `json:"success"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("not success: %s", w.Body.String())
+	}
+	if got := resp.Data.SessionInfo.DatabaseName; got != "TESTDB" {
+		t.Errorf("sessionInfo.databaseName = %q, want TESTDB", got)
+	}
+	if got := resp.Data.SessionInfo.SchemaName; got != "PUBLIC" {
+		t.Errorf("sessionInfo.schemaName = %q, want PUBLIC", got)
+	}
+	if resp.Data.Parameters == nil {
+		t.Error("parameters must be a non-nil array, got null")
+	}
+}
+
 func TestLogin_ConcurrentSessionIDsAreUnique(t *testing.T) {
 	t.Parallel()
 	s := newTestServer(t, nil)

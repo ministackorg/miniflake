@@ -131,11 +131,14 @@ type loginRequestBody struct {
 }
 
 type loginResponseData struct {
-	Token               string `json:"token"`
-	MasterToken         string `json:"masterToken"`
-	SessionID           int64  `json:"sessionId"`
-	MasterValidityInSec int    `json:"masterValidityInSeconds"`
-	DisplayUserName     string `json:"displayUserName"`
+	Token               string               `json:"token"`
+	MasterToken         string               `json:"masterToken"`
+	SessionID           int64                `json:"sessionId"`
+	MasterValidityInSec int                  `json:"masterValidityInSeconds"`
+	DisplayUserName     string               `json:"displayUserName"`
+	ServerVersion       string               `json:"serverVersion"`
+	SessionInfo         loginSessionInfo     `json:"sessionInfo"`
+	Parameters          []nameValueParameter `json:"parameters"`
 }
 
 type queryRequestBody struct {
@@ -160,6 +163,18 @@ type queryResponseData struct {
 	Total             int             `json:"total"`
 	Returned          int             `json:"returned"`
 	QueryStatus       string          `json:"queryStatus"`
+}
+
+type loginSessionInfo struct {
+	DatabaseName  string `json:"databaseName"`
+	SchemaName    string `json:"schemaName"`
+	WarehouseName string `json:"warehouseName"`
+	RoleName      string `json:"roleName"`
+}
+
+type nameValueParameter struct {
+	Name  string      `json:"name"`
+	Value interface{} `json:"value"`
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +354,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SessionID:           int64(atomic.AddUint64(&sessionIDCounter, 1)),
 		MasterValidityInSec: 14400,
 		DisplayUserName:     strings.ToUpper(body.Data.LoginName),
+		ServerVersion:       "8.0.0",
+		SessionInfo: loginSessionInfo{
+			DatabaseName:  database,
+			SchemaName:    schema,
+			WarehouseName: warehouse,
+			RoleName:      "SYSADMIN",
+		},
+		Parameters: []nameValueParameter{},
 	})
 }
 
