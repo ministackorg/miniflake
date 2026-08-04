@@ -90,6 +90,13 @@ func (m *Manager) DeleteSession(token string) {
 	m.mu.Unlock()
 }
 
+// Reset removes every active session.
+func (m *Manager) Reset() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.sessions = make(map[string]*Session)
+}
+
 // UpdateActivity updates the LastActiveAt timestamp for the given token.
 func (m *Manager) UpdateActivity(token string) {
 	m.mu.Lock()

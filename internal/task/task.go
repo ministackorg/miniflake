@@ -208,6 +208,25 @@ func (s *Scheduler) ShowTasks(db, schema string) []TaskInfo {
 	return result
 }
 
+// Reset stops and removes every task. The scheduler loop itself keeps running.
+func (s *Scheduler) Reset() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		t.mu.Lock()
+		if t.State == TaskStarted {
+			select {
+			case <-t.stopCh:
+			default:
+				close(t.stopCh)
+			}
+		}
+		t.State = TaskSuspended
+		t.mu.Unlock()
+	}
+	s.tasks = make(map[string]*Task)
+}
+
 // Start begins the scheduler loop. It ticks every second and runs eligible tasks.
 func (s *Scheduler) Start(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)

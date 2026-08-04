@@ -120,6 +120,71 @@ func TestHealth_ReturnsOK(t *testing.T) {
 	}
 }
 
+func TestReset_MethodNotAllowed(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/_miniflake/reset", nil)
+	// Go through the real Handler so withStateLock is exercised (GET must
+	// not take the exclusive lock before returning 405).
+	s.httpServer.Handler.ServeHTTP(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestReset_GETDoesNotTakeExclusiveLock(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	// Hold the exclusive lock as if a POST reset were in flight.
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	done := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/_miniflake/reset", nil)
+		s.httpServer.Handler.ServeHTTP(w, r)
+		done <- w.Code
+	}()
+
+	select {
+	case code := <-done:
+		if code != http.StatusMethodNotAllowed {
+			t.Fatalf("status: %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("GET /_miniflake/reset blocked on exclusive lock; method check must run before Lock")
+	}
+}
+
+func TestReset_WithoutOrchestrator(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/_miniflake/reset", nil)
+	s.handleReset(w, r)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status: %d", w.Code)
+	}
+}
+
+func TestStateLock_HealthStaysUpDuringExclusiveLock(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+	// Simulate an in-flight reset holding the exclusive lock.
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/_miniflake/health", nil)
+	s.httpServer.Handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("health should stay unlocked during reset, got %d", w.Code)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Method validation
 // ---------------------------------------------------------------------------

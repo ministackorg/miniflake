@@ -50,6 +50,13 @@ func NewRegistry() *Registry {
 	}
 }
 
+// Reset clears all registered UDFs.
+func (r *Registry) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.udfs = make(map[string]*UDF)
+}
+
 // makeKey builds the registry key for a UDF.
 func makeKey(db, schema, name string, argTypes []string) string {
 	return fmt.Sprintf("%s.%s.%s(%s)",
