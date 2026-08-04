@@ -76,6 +76,23 @@ func TestRewriteTasks(t *testing.T) {
 	}
 }
 
+func TestRewriteShowParameters(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"SHOW PARAMETERS":                         "MINIFLAKE_SHOW_PARAMETERS SESSION |",
+		"SHOW PARAMETERS LIKE 'TIME%'":            "MINIFLAKE_SHOW_PARAMETERS SESSION | TIME%",
+		"SHOW PARAMETERS IN ACCOUNT":              "MINIFLAKE_SHOW_PARAMETERS ACCOUNT |",
+		"SHOW PARAMETERS LIKE 'AUTO%' IN SESSION": "MINIFLAKE_SHOW_PARAMETERS SESSION | AUTO%",
+		"SHOW PARAMETERS FOR ACCOUNT":             "MINIFLAKE_SHOW_PARAMETERS ACCOUNT |",
+	}
+	for sql, want := range cases {
+		got := mustRewrite(t, sql)
+		if !strings.Contains(got, want) {
+			t.Errorf("%q → %q (want substring %q)", sql, got, want)
+		}
+	}
+}
+
 func TestRewritePipes(t *testing.T) {
 	t.Parallel()
 	cases := map[string]string{

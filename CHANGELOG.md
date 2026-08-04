@@ -8,6 +8,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **`SHOW PARAMETERS`.** Returns a default session parameter catalog
+  (`key`, `value`, `default`, `level`, `description`, `type`) so drivers
+  that probe config at connect time get a real result set. Supports
+  `LIKE` and `IN SESSION` / `IN ACCOUNT`. `ALTER SESSION` is not wired
+  yet, so value always matches default.
+
+### Changed
+- **`CREATE TASK` validates cron timezones.** Invalid IANA zones in
+  `USING CRON ... <tz>` fail at create time. The timezone stays inside
+  the `schedule` string (Snowflake has no separate `timezone` column on
+  `SHOW TASKS`).
 - **`POST /_miniflake/reset`.** Wipes DuckDB user tables, views and schemas,
   detaches non-primary databases, clears stages on disk, sessions, and
   in-process subsystem state (tasks, streams, pipes, UDFs, RBAC,

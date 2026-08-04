@@ -729,9 +729,11 @@ func TestCreateAndShowTask(t *testing.T) {
 	defer db.Close()
 
 	execSQL(t, db, "DROP TASK IF EXISTS test_task")
+	execSQL(t, db, "DROP TASK IF EXISTS tz_task")
 	execSQL(t, db, "DROP TABLE IF EXISTS task_target")
 	execSQL(t, db, "CREATE TABLE task_target (n INT)")
 	execSQL(t, db, "CREATE TASK test_task WAREHOUSE = wh SCHEDULE = '5 MINUTE' AS INSERT INTO task_target VALUES (42)")
+	execSQL(t, db, "CREATE TASK tz_task WAREHOUSE = wh SCHEDULE = 'USING CRON 0 9 * * * America/Los_Angeles' AS INSERT INTO task_target VALUES (1)")
 
 	rows, err := db.Query("SHOW TASKS")
 	if err != nil {
@@ -739,7 +741,22 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 	defer rows.Close()
 	cols, _ := rows.Columns()
+	for _, c := range cols {
+		if strings.EqualFold(c, "timezone") {
+			t.Fatalf("SHOW TASKS must not expose a timezone column (Snowflake keeps it in schedule); cols=%v", cols)
+		}
+	}
+	schedCol := -1
+	for i, c := range cols {
+		if strings.EqualFold(c, "schedule") {
+			schedCol = i
+		}
+	}
+	if schedCol < 0 {
+		t.Fatalf("SHOW TASKS missing schedule column; cols=%v", cols)
+	}
 	found := false
+	foundTZ := false
 	for rows.Next() {
 		vals := make([]interface{}, len(cols))
 		ptrs := make([]interface{}, len(cols))
@@ -749,12 +766,30 @@ func TestCreateAndShowTask(t *testing.T) {
 		if err := rows.Scan(ptrs...); err != nil {
 			t.Fatal(err)
 		}
-		if name, ok := vals[1].(string); ok && strings.EqualFold(name, "test_task") {
+		name, _ := vals[1].(string)
+		if strings.EqualFold(name, "test_task") {
 			found = true
+		}
+		if strings.EqualFold(name, "tz_task") {
+			foundTZ = true
+			sched, _ := vals[schedCol].(string)
+			if !strings.Contains(sched, "America/Los_Angeles") {
+				t.Errorf("tz_task schedule=%q, want America/Los_Angeles inside schedule", sched)
+			}
 		}
 	}
 	if !found {
 		t.Error("test_task not in SHOW TASKS")
+	}
+	if !foundTZ {
+		t.Error("tz_task not in SHOW TASKS")
+	}
+
+	// Bad IANA zone must fail at CREATE TASK.
+	_, err = db.Exec("CREATE TASK bad_tz WAREHOUSE = wh SCHEDULE = 'USING CRON 0 9 * * * Atlantis' AS SELECT 1")
+	if err == nil {
+		t.Error("expected CREATE TASK with bad timezone to fail")
+		execSQL(t, db, "DROP TASK IF EXISTS bad_tz")
 	}
 
 	// EXECUTE TASK runs the body once.
@@ -768,6 +803,67 @@ func TestCreateAndShowTask(t *testing.T) {
 	}
 
 	execSQL(t, db, "DROP TASK test_task")
+	execSQL(t, db, "DROP TASK tz_task")
+}
+
+func TestShowParameters(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	rows, err := db.Query("SHOW PARAMETERS LIKE 'TIMEZONE'")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	cols, _ := rows.Columns()
+	wantCols := []string{"key", "value", "default", "level", "description", "type"}
+	if len(cols) != len(wantCols) {
+		t.Fatalf("cols=%v want %v", cols, wantCols)
+	}
+	for i, c := range wantCols {
+		if !strings.EqualFold(cols[i], c) {
+			t.Errorf("col[%d]=%q want %q", i, cols[i], c)
+		}
+	}
+
+	found := false
+	for rows.Next() {
+		vals := make([]interface{}, len(cols))
+		ptrs := make([]interface{}, len(cols))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			t.Fatal(err)
+		}
+		key, _ := vals[0].(string)
+		if key == "TIMEZONE" {
+			found = true
+			if vals[1] != "America/Los_Angeles" {
+				t.Errorf("TIMEZONE value=%v", vals[1])
+			}
+			if vals[5] != "STRING" {
+				t.Errorf("TIMEZONE type=%v want STRING", vals[5])
+			}
+		}
+	}
+	if !found {
+		t.Error("TIMEZONE not in SHOW PARAMETERS LIKE 'TIMEZONE'")
+	}
+
+	// Bare SHOW PARAMETERS must return a non-empty catalog.
+	all, err := db.Query("SHOW PARAMETERS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer all.Close()
+	n := 0
+	for all.Next() {
+		n++
+	}
+	if n < 10 {
+		t.Errorf("SHOW PARAMETERS returned %d rows, want a useful default set", n)
+	}
 }
 
 func TestCreateAndShowPipe(t *testing.T) {

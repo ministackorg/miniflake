@@ -398,11 +398,13 @@ func (s *Scheduler) evaluateWhen(t *Task) bool {
 
 // ScheduleInterval represents a parsed schedule.
 type ScheduleInterval struct {
-	Minutes int    // for "N MINUTE" schedules
-	Cron    string // raw cron expression
+	Minutes  int    // for "N MINUTE" schedules
+	Cron     string // 5-field cron expression, optionally followed by IANA tz
+	Timezone string // IANA tz from a USING CRON schedule; "UTC" if omitted
 }
 
 var minuteRe = regexp.MustCompile(`(?i)^(\d+)\s+MINUTES?$`)
+var usingCronRe = regexp.MustCompile(`(?i)^USING\s+CRON\s+(.+)$`)
 
 // ParseSchedule parses a Snowflake schedule string.
 // Supports "N MINUTE" and "USING CRON <expr> <tz>" formats.
@@ -418,15 +420,18 @@ func ParseSchedule(schedule string) (*ScheduleInterval, error) {
 		return &ScheduleInterval{Minutes: n}, nil
 	}
 
-	// Check for CRON format: "USING CRON <expr> <timezone>"
-	upper := strings.ToUpper(schedule)
-	if strings.HasPrefix(upper, "USING CRON ") {
-		cronPart := strings.TrimPrefix(schedule, schedule[:len("USING CRON ")])
-		cronPart = strings.TrimSpace(cronPart)
+	// Check for CRON format: "USING CRON <expr> [<timezone>]"
+	if m := usingCronRe.FindStringSubmatch(schedule); m != nil {
+		cronPart := strings.TrimSpace(m[1])
 		if cronPart == "" {
 			return nil, fmt.Errorf("empty cron expression")
 		}
-		return &ScheduleInterval{Cron: cronPart}, nil
+		// Validate fields + timezone the same way the scheduler will.
+		_, loc, err := parseCronExpr(cronPart)
+		if err != nil {
+			return nil, fmt.Errorf("invalid cron schedule: %w", err)
+		}
+		return &ScheduleInterval{Cron: cronPart, Timezone: loc.String()}, nil
 	}
 
 	return nil, fmt.Errorf("unrecognized schedule format: %q", schedule)
