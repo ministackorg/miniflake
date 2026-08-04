@@ -165,7 +165,8 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | | Stage file listing (`LS @stage`, `@~`, `@%table`, `PATTERN`) | ✅ |
 | | `REMOVE` / `RM @stage`, with subpath and `PATTERN` filters | ✅ |
 | **Streams & Tasks** | Streams — `CREATE/DROP/SHOW STREAM`, DML change-record hooks | ✅ |
-| | Tasks — `CREATE/DROP/ALTER/SHOW/EXECUTE TASK`, real cron parser, scheduler runs | ✅ |
+| | Tasks — `CREATE/DROP/ALTER/SHOW/EXECUTE TASK`, real cron parser, scheduler runs, validates cron timezones | ✅ |
+| **Session** | `SHOW PARAMETERS` (session/account defaults, `LIKE`) | ✅ |
 | **Time Travel** | `UNDROP TABLE` — snapshot on `DROP TABLE`, restored via parquet | ✅ |
 | | `AT (OFFSET => -N)` / `AT (TIMESTAMP => '…')` / `BEFORE (TIMESTAMP => …)` | ✅ |
 | **Cloning** | Table / Schema / Database clone (CTAS-backed) | 🟡 |
@@ -175,6 +176,7 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | | JavaScript UDFs (needs the `goja` runtime — opted out for now) | 🚧 |
 | **RBAC** | Roles, grants — parsed, not enforced | ✅ |
 | **Snowpipe** | `CREATE/DROP/SHOW PIPE` + REST `/v1/data/pipes/{db}/{schema}/{pipe}/insertFiles` | ✅ |
+| **Internal** | `GET /_miniflake/health`, `POST /_miniflake/reset` (CI state wipe) | ✅ |
 | **Information Schema** | `TABLES`, `COLUMNS`, `SCHEMATA` views | ✅ |
 
 ---
