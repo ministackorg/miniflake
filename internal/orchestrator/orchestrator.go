@@ -75,6 +75,50 @@ func New(
 	}
 }
 
+// Reset wipes in-process subsystem state and DuckDB user objects so CI can
+// start a clean run without restarting the process. Mirrors ministack's
+// POST /_ministack/reset. Catalog state matches a fresh process boot
+// (Catalog.Init only): no MINIFLAKE/MAIN fixture.
+func (o *Orchestrator) Reset(ctx context.Context) error {
+	if o.engine != nil {
+		if err := o.engine.Reset(ctx); err != nil {
+			return err
+		}
+	}
+	if o.catalog != nil {
+		o.catalog.Reset()
+	}
+	if o.stageMgr != nil {
+		if err := o.stageMgr.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.streamEng != nil {
+		o.streamEng.Reset()
+	}
+	if o.taskSched != nil {
+		o.taskSched.Reset()
+	}
+	if o.timeTravelEng != nil {
+		if err := o.timeTravelEng.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.cloneEng != nil {
+		o.cloneEng.Reset()
+	}
+	if o.udfReg != nil {
+		o.udfReg.Reset()
+	}
+	if o.rbacEng != nil {
+		o.rbacEng.Reset()
+	}
+	if o.snowpipeEng != nil {
+		o.snowpipeEng.Reset()
+	}
+	return nil
+}
+
 // ExecuteSQL is the main entry point. It rewrites the SQL, detects the
 // statement type, and routes to the correct subsystem(s).
 func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sql string) (*QueryResult, error) {

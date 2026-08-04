@@ -82,6 +82,15 @@ func (e *Engine) Init() {
 	_ = e.GrantRoleToRole("USERADMIN", "SECURITYADMIN")
 }
 
+// Reset clears RBAC state and re-runs Init.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	e.roles = make(map[string]*Role)
+	e.userRoles = make(map[string][]string)
+	e.mu.Unlock()
+	e.Init()
+}
+
 // CreateRole creates a new role.
 func (e *Engine) CreateRole(name string) error {
 	e.mu.Lock()
