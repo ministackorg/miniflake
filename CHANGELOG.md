@@ -4,7 +4,7 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.4] - 2026-08-05
 
 ### Fixed
 - **Login response now includes `sessionInfo` and `parameters`.** The
@@ -15,7 +15,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `NullReferenceException` ("Object reference not set to an instance of an
   object") before the connection opened. The response now always carries a
   populated `sessionInfo` (database/schema/warehouse/role) and a non-nil
-  `parameters` array, unblocking the .NET connector over HTTPS.
+  `parameters` array, unblocking the .NET connector over HTTPS. Contributed
+  by @SaiSDET.
 
 ## [0.1.3] - 2026-08-04
 
@@ -177,6 +178,7 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
+[0.1.4]: https://github.com/ministackorg/miniflake/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ministackorg/miniflake/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ministackorg/miniflake/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ministackorg/miniflake/compare/v0.1.0...v0.1.1
