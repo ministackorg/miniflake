@@ -4,6 +4,18 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Login response now includes `sessionInfo` and `parameters`.** The
+  `/session/v1/login-request` handler omitted both fields. `gosnowflake`
+  and the Python connector tolerate their absence, but the Snowflake .NET
+  connector dereferences `data.sessionInfo` and iterates `data.parameters`
+  unconditionally in `ProcessLoginResponse`, so login panicked with a
+  `NullReferenceException` ("Object reference not set to an instance of an
+  object") before the connection opened. The response now always carries a
+  populated `sessionInfo` (database/schema/warehouse/role) and a non-nil
+  `parameters` array, unblocking the .NET connector over HTTPS.
 
 ## [0.1.3] - 2026-08-04
 
