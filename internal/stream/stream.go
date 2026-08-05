@@ -65,6 +65,13 @@ func NewEngine() *Engine {
 	}
 }
 
+// Reset clears all stream state.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.streams = make(map[string]*Stream)
+}
+
 func streamKey(db, schema, name string) string {
 	return strings.ToLower(fmt.Sprintf("%s.%s.%s", db, schema, name))
 }

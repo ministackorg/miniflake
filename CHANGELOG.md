@@ -17,6 +17,30 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   populated `sessionInfo` (database/schema/warehouse/role) and a non-nil
   `parameters` array, unblocking the .NET connector over HTTPS.
 
+## [0.1.3] - 2026-08-04
+
+### Added
+- **`SHOW PARAMETERS`.** Returns a default session parameter catalog
+  (`key`, `value`, `default`, `level`, `description`, `type`) so drivers
+  that probe config at connect time get a real result set. Supports
+  `LIKE` and `IN SESSION` / `IN ACCOUNT`. `ALTER SESSION` is not wired
+  yet, so value always matches default. Contributed by @fedemeister.
+
+### Changed
+- **`CREATE TASK` validates cron timezones.** Invalid IANA zones in
+  `USING CRON ... <tz>` fail at create time. The timezone stays inside
+  the `schedule` string (Snowflake has no separate `timezone` column on
+  `SHOW TASKS`). Contributed by @fedemeister.
+- **`POST /_miniflake/reset`.** Wipes DuckDB user tables, views and schemas,
+  detaches non-primary databases, clears stages on disk, sessions, and
+  in-process subsystem state (tasks, streams, pipes, UDFs, RBAC,
+  time-travel snapshots) so CI can isolate runs without restarting the
+  process. Same idea as ministack's `/_ministack/reset`: an exclusive
+  lock blocks other requests while the wipe runs; health stays unlocked
+  for liveness checks. Catalog state matches a fresh boot
+  (`Catalog.Init` only). Attached `.duckdb` files on disk are left in
+  place (DETACH only). Contributed by @fedemeister.
+
 ## [0.1.2] - 2026-08-03
 
 ### Added
@@ -153,6 +177,7 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
+[0.1.3]: https://github.com/ministackorg/miniflake/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ministackorg/miniflake/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/ministackorg/miniflake/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/ministackorg/miniflake/releases/tag/v0.1.0

@@ -24,6 +24,7 @@ func init() {
 		rewriteStreams,
 		rewriteTasks,
 		rewritePipes,
+		rewriteShowParameters,
 		rewriteUndrop,
 		rewriteTimeTravel,
 		rewriteMerge,

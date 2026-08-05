@@ -57,6 +57,20 @@ func NewManager(baseDir string) *Manager {
 	}
 }
 
+// Reset drops every registered stage and wipes the stage directory on disk.
+func (m *Manager) Reset() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.stages = make(map[string]*StageMeta)
+	if err := os.RemoveAll(m.baseDir); err != nil {
+		return fmt.Errorf("stage: reset remove %s: %w", m.baseDir, err)
+	}
+	if err := os.MkdirAll(m.baseDir, 0o755); err != nil {
+		return fmt.Errorf("stage: reset mkdir %s: %w", m.baseDir, err)
+	}
+	return nil
+}
+
 // ErrStageExists reports that a stage of that name is already registered, so
 // callers can implement CREATE STAGE IF NOT EXISTS without matching on the
 // error text.

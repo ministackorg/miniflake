@@ -119,6 +119,15 @@ func (c *Catalog) Init() {
 	_ = c.CreateWarehouse("COMPUTE_WH", "X-Small", 600)
 }
 
+// Reset clears all catalog state and re-runs Init.
+func (c *Catalog) Reset() {
+	c.mu.Lock()
+	c.databases = make(map[string]*Database)
+	c.warehouses = make(map[string]*Warehouse)
+	c.mu.Unlock()
+	c.Init()
+}
+
 // --- Database operations ---
 
 func (c *Catalog) CreateDatabase(name, owner string) error {

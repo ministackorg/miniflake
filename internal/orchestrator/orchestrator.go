@@ -75,6 +75,50 @@ func New(
 	}
 }
 
+// Reset wipes in-process subsystem state and DuckDB user objects so CI can
+// start a clean run without restarting the process. Mirrors ministack's
+// POST /_ministack/reset. Catalog state matches a fresh process boot
+// (Catalog.Init only): no MINIFLAKE/MAIN fixture.
+func (o *Orchestrator) Reset(ctx context.Context) error {
+	if o.engine != nil {
+		if err := o.engine.Reset(ctx); err != nil {
+			return err
+		}
+	}
+	if o.catalog != nil {
+		o.catalog.Reset()
+	}
+	if o.stageMgr != nil {
+		if err := o.stageMgr.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.streamEng != nil {
+		o.streamEng.Reset()
+	}
+	if o.taskSched != nil {
+		o.taskSched.Reset()
+	}
+	if o.timeTravelEng != nil {
+		if err := o.timeTravelEng.Reset(); err != nil {
+			return err
+		}
+	}
+	if o.cloneEng != nil {
+		o.cloneEng.Reset()
+	}
+	if o.udfReg != nil {
+		o.udfReg.Reset()
+	}
+	if o.rbacEng != nil {
+		o.rbacEng.Reset()
+	}
+	if o.snowpipeEng != nil {
+		o.snowpipeEng.Reset()
+	}
+	return nil
+}
+
 // ExecuteSQL is the main entry point. It rewrites the SQL, detects the
 // statement type, and routes to the correct subsystem(s).
 func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sql string) (*QueryResult, error) {
@@ -151,24 +195,25 @@ func (o *Orchestrator) ExecNoResult(ctx context.Context, sql string, args ...int
 // ---------------------------------------------------------------------------
 
 var (
-	reMarkerUse          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_USE_(DATABASE|SCHEMA|WAREHOUSE|ROLE)\s+(\S+)\s*\*/`)
-	reMarkerCopyInto     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_COPY_INTO\s+(.*?)\s*\*/`)
-	reMarkerPut          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_PUT\s+(.*?)\s*\*/`)
-	reMarkerGet          = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_GET\s+(.*?)\s*\*/`)
-	reMarkerList         = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_LIST\s+(.*?)\s*\*/`)
-	reMarkerRemove       = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_REMOVE\s+(.*?)\s*\*/`)
-	reMarkerCreateStream = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_STREAM\s+(.*?)\s*\*/`)
-	reMarkerDropStream   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_STREAM\s+(\S+)\s+([01])\s*\*/`)
-	reMarkerShowStreams  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_STREAMS\s*(\S*)\s*\*/`)
-	reMarkerCreateTask   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_TASK\s+(.*?)\s*\*/`)
-	reMarkerDropTask     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_TASK\s+(\S+)\s+([01])\s*\*/`)
-	reMarkerAlterTask    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_ALTER_TASK\s+(\S+)\s+(RESUME|SUSPEND)\s*\*/`)
-	reMarkerShowTasks    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_TASKS\s*(\S*)\s*\*/`)
-	reMarkerExecuteTask  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_EXECUTE_TASK\s+(\S+)\s*\*/`)
-	reMarkerCreatePipe   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_PIPE\s+(.*?)\s*\*/`)
-	reMarkerDropPipe     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_PIPE\s+(\S+)\s+([01])\s*\*/`)
-	reMarkerShowPipes    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_PIPES\s*(\S*)\s*\*/`)
-	reMarkerUndropTable  = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_UNDROP_TABLE\s+(\S+)\s*\*/`)
+	reMarkerUse            = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_USE_(DATABASE|SCHEMA|WAREHOUSE|ROLE)\s+(\S+)\s*\*/`)
+	reMarkerCopyInto       = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_COPY_INTO\s+(.*?)\s*\*/`)
+	reMarkerPut            = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_PUT\s+(.*?)\s*\*/`)
+	reMarkerGet            = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_GET\s+(.*?)\s*\*/`)
+	reMarkerList           = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_LIST\s+(.*?)\s*\*/`)
+	reMarkerRemove         = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_REMOVE\s+(.*?)\s*\*/`)
+	reMarkerCreateStream   = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_STREAM\s+(.*?)\s*\*/`)
+	reMarkerDropStream     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_STREAM\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerShowStreams    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_STREAMS\s*(\S*)\s*\*/`)
+	reMarkerCreateTask     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_TASK\s+(.*?)\s*\*/`)
+	reMarkerDropTask       = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_TASK\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerAlterTask      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_ALTER_TASK\s+(\S+)\s+(RESUME|SUSPEND)\s*\*/`)
+	reMarkerShowTasks      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_TASKS\s*(\S*)\s*\*/`)
+	reMarkerExecuteTask    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_EXECUTE_TASK\s+(\S+)\s*\*/`)
+	reMarkerCreatePipe     = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_CREATE_PIPE\s+(.*?)\s*\*/`)
+	reMarkerDropPipe       = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_DROP_PIPE\s+(\S+)\s+([01])\s*\*/`)
+	reMarkerShowPipes      = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_PIPES\s*(\S*)\s*\*/`)
+	reMarkerShowParameters = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_SHOW_PARAMETERS\s+(\S+)\s+\|\s*(.*?)\s*\*/`)
+	reMarkerUndropTable    = regexp.MustCompile(`(?s)/\*\s*MINIFLAKE_UNDROP_TABLE\s+(\S+)\s*\*/`)
 )
 
 func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.Session, sql string) (*QueryResult, bool, error) {
@@ -293,6 +338,11 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 	// SHOW PIPES
 	if m := reMarkerShowPipes.FindStringSubmatch(sql); m != nil {
 		return o.handleShowPipes(sess, m[1])
+	}
+
+	// SHOW PARAMETERS
+	if m := reMarkerShowParameters.FindStringSubmatch(sql); m != nil {
+		return o.handleShowParameters(m[2], m[1])
 	}
 
 	// UNDROP TABLE

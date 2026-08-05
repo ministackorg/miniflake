@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -40,6 +41,11 @@ type Server struct {
 	httpServer *http.Server
 	tlsConfig  *tls.Config
 	certPath   string
+
+	// stateMu gates access to shared MiniFlake state the same way ministack
+	// serializes /_ministack/reset: exclusive Lock for reset, RLock for every
+	// other request so a wipe never overlaps with a query.
+	stateMu sync.RWMutex
 }
 
 // New creates a Server. Call ListenAndServe to start it.
@@ -80,13 +86,42 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 
 	// Internal.
 	mux.HandleFunc("/_miniflake/health", s.handleHealth)
+	mux.HandleFunc("/_miniflake/reset", s.handleReset)
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", host, port),
-		Handler: mux,
+		Handler: s.withStateLock(mux),
 	}
 
 	return s
+}
+
+// withStateLock wraps the serve mux so POST /_miniflake/reset takes an
+// exclusive lock while every other request (except health) takes a shared
+// one. Health stays unlocked so liveness checks still work during a wipe.
+// Non-POST methods on /_miniflake/reset do not take the exclusive lock
+// (they only need to return 405).
+func (s *Server) withStateLock(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/_miniflake/health":
+			next.ServeHTTP(w, r)
+			return
+		case "/_miniflake/reset":
+			if r.Method != http.MethodPost {
+				next.ServeHTTP(w, r)
+				return
+			}
+			s.stateMu.Lock()
+			defer s.stateMu.Unlock()
+			next.ServeHTTP(w, r)
+			return
+		default:
+			s.stateMu.RLock()
+			defer s.stateMu.RUnlock()
+			next.ServeHTTP(w, r)
+		}
+	})
 }
 
 // ListenAndServe starts the server (blocking). When TLS is enabled (see
@@ -756,6 +791,30 @@ func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// handleReset implements POST /_miniflake/reset. It wipes DuckDB user objects
+// and in-process subsystem state so CI can isolate runs without restarting
+// the process. GET and other methods return 405. The exclusive state lock is
+// taken by withStateLock before this handler runs.
+func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
+		return
+	}
+	if s.orchestrator == nil {
+		errorResponse(w, http.StatusServiceUnavailable, "503", "orchestrator not configured")
+		return
+	}
+
+	if err := s.orchestrator.Reset(r.Context()); err != nil {
+		errorResponse(w, http.StatusInternalServerError, "500", err.Error())
+		return
+	}
+	if s.sessionMgr != nil {
+		s.sessionMgr.Reset()
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
