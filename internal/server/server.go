@@ -1,10 +1,12 @@
 package server
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -90,10 +92,61 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 
 	s.httpServer = &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", host, port),
-		Handler: s.withStateLock(mux),
+		Handler: withDecompressedBody(s.withStateLock(mux)),
 	}
 
 	return s
+}
+
+// withDecompressedBody transparently inflates request bodies that arrive with
+// Content-Encoding: gzip, so every handler can decode r.Body directly.
+//
+// The Snowflake drivers compress the bodies they send. snowflake-connector-python
+// gzips every request, including the initial login-request, so without this the
+// handlers hand a gzip stream to json.Decode and the driver never gets past
+// authentication. gosnowflake does not compress by default, which is why the
+// integration suite did not catch it.
+func withDecompressedBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body == nil || !hasGzipEncoding(r.Header.Get("Content-Encoding")) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		zr, err := gzip.NewReader(r.Body)
+		if err != nil {
+			errorResponse(w, http.StatusBadRequest, "400", "invalid request body")
+			return
+		}
+		defer zr.Close()
+
+		// Keep the original Closer so the underlying connection is released.
+		r.Body = gzipBody{Reader: zr, Closer: r.Body}
+		// The body is no longer encoded and its length is now unknown; leaving
+		// these set would misdescribe what handlers read.
+		r.Header.Del("Content-Encoding")
+		r.Header.Del("Content-Length")
+		r.ContentLength = -1
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+// gzipBody pairs the inflating reader with the original body's Closer.
+type gzipBody struct {
+	io.Reader
+	io.Closer
+}
+
+// hasGzipEncoding reports whether a Content-Encoding header selects gzip.
+// The header is a comma-separated list and is case-insensitive.
+func hasGzipEncoding(header string) bool {
+	for _, enc := range strings.Split(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(enc), "gzip") {
+			return true
+		}
+	}
+	return false
 }
 
 // withStateLock wraps the serve mux so POST /_miniflake/reset takes an
