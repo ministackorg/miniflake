@@ -73,7 +73,8 @@ func TestBuildRowSet_TypesAndNulls(t *testing.T) {
 	if row[1].(string) != "42" {
 		t.Errorf("int: %v", row[1])
 	}
-	if row[3].(string) != "true" || row[4].(string) != "false" {
+	// Snowflake wire format encodes booleans as "1"/"0" (see cellToString).
+	if row[3].(string) != "1" || row[4].(string) != "0" {
 		t.Errorf("bool: %v / %v", row[3], row[4])
 	}
 	if !strings.HasPrefix(row[7].(string), "1700000000.") {
@@ -99,6 +100,98 @@ func TestSnowflakeTypeName(t *testing.T) {
 		if got := snowflakeTypeName(v); got != want {
 			t.Errorf("type(%T): got %q want %q", v, got, want)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rowtype column metadata (strict-driver compatibility)
+// ---------------------------------------------------------------------------
+
+func TestSnowflakeColumnMetadata(t *testing.T) {
+	t.Parallel()
+	deref := func(p *int) interface{} {
+		if p == nil {
+			return nil
+		}
+		return *p
+	}
+	for _, tc := range []struct {
+		typeName                        string
+		length, precision, scale, bytes interface{}
+	}{
+		{"fixed", nil, 38, 0, nil},
+		{"real", nil, nil, nil, nil},
+		{"text", 16777216, nil, nil, 16777216},
+		{"binary", 8388608, nil, nil, 8388608},
+		{"timestamp_ntz", nil, 0, 9, nil},
+		{"boolean", nil, nil, nil, nil},
+		{"date", nil, nil, nil, nil},
+	} {
+		l, p, s, b := snowflakeColumnMetadata(tc.typeName)
+		if deref(l) != tc.length || deref(p) != tc.precision || deref(s) != tc.scale || deref(b) != tc.bytes {
+			t.Errorf("%s: got (len=%v prec=%v scale=%v byte=%v), want (%v %v %v %v)",
+				tc.typeName, deref(l), deref(p), deref(s), deref(b),
+				tc.length, tc.precision, tc.scale, tc.bytes)
+		}
+	}
+}
+
+// TestQuery_RowTypeCarriesStrictDriverKeys is the regression test for the
+// Python-connector query failure: ResultMetadata.from_column reads
+// col["length"], col["precision"] and col["scale"] by direct key access, so a
+// missing key is a KeyError. Every rowtype entry must carry those keys (null is
+// fine), with Snowflake's per-type values. Decoded into a raw map so absence is
+// distinguishable from a null value.
+func TestQuery_RowTypeCarriesStrictDriverKeys(t *testing.T) {
+	t.Parallel()
+	eng := &fakeEngine{
+		cols: []string{"n", "s", "t"},
+		rows: [][]interface{}{{int64(1), "hi", time.Unix(1700000000, 0).UTC()}},
+	}
+	s := newTestServer(t, eng)
+
+	buf, _ := json.Marshal(queryRequestBody{SQLText: "SELECT n, s, t FROM x"})
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", bytes.NewReader(buf))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Data struct {
+			RowType []map[string]json.RawMessage `json:"rowtype"`
+		} `json:"data"`
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !resp.Success || len(resp.Data.RowType) != 3 {
+		t.Fatalf("unexpected response: success=%v cols=%d", resp.Success, len(resp.Data.RowType))
+	}
+
+	// Every column must carry the keys the strict driver dereferences.
+	for i, col := range resp.Data.RowType {
+		for _, key := range []string{"name", "type", "length", "precision", "scale", "byteLength", "nullable"} {
+			if _, ok := col[key]; !ok {
+				t.Errorf("column %d (%v) missing key %q", i, string(col["name"]), key)
+			}
+		}
+	}
+	// Spot-check per-type values match Snowflake's conventions.
+	if got := string(resp.Data.RowType[0]["precision"]); got != "38" { // fixed
+		t.Errorf("fixed precision = %s, want 38", got)
+	}
+	if got := string(resp.Data.RowType[0]["scale"]); got != "0" {
+		t.Errorf("fixed scale = %s, want 0", got)
+	}
+	if got := string(resp.Data.RowType[1]["length"]); got == "null" || got == "" { // text
+		t.Errorf("text length = %s, want a number", got)
+	}
+	if got := string(resp.Data.RowType[2]["scale"]); got != "9" { // timestamp_ntz
+		t.Errorf("timestamp scale = %s, want 9", got)
 	}
 }
 

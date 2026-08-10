@@ -16,10 +16,23 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   authenticate. A `withDecompressedBody` middleware now inflates the body
   when `Content-Encoding` selects gzip, covering every current handler and
   any route added later in one place. `gosnowflake` does not compress
-  requests, which is why the integration suite never caught it. This
-  unblocks the Python connector's login only; a subsequent query still
-  fails on a separate response-shape gap (the query rowtype omits the
-  `length` field the connector requires). Contributed by @frazier-at-cpcc.
+  requests, which is why the integration suite never caught it. Contributed
+  by @frazier-at-cpcc.
+- **Query results are now readable by `snowflake-connector-python`.** The
+  query response's `rowtype` carried only `name`, `type` and `nullable`.
+  The Python connector's `ResultMetadata.from_column` reads `length`,
+  `precision` and `scale` by direct key access, so the first `execute()`
+  failed with `KeyError: 'length'`; `gosnowflake` unmarshals `rowtype` into
+  an integer struct and tolerates the missing keys, which is why the
+  integration suite never caught it. Each column now carries
+  `length`/`precision`/`scale`/`byteLength` with Snowflake's per-type values
+  (`NUMBER` reports precision/scale, timestamps report scale, `VARCHAR` and
+  `BINARY` report length, others null). Booleans are also now wire-encoded
+  as `1`/`0` rather than `true`/`false`: `gosnowflake` accepts both, but the
+  Python connector decodes a boolean as true only for `1`/`TRUE`, so `true`
+  silently read back as `False`. Verified end to end against
+  `snowflake-connector-python` 4.7.2 (login, a mixed-type query, and a table
+  round-trip).
 
 ## [0.1.4] - 2026-08-05
 
