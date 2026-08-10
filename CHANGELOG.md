@@ -34,6 +34,7 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `snowflake-connector-python` 4.7.2 (login, a mixed-type query, and a table
   round-trip).
 
+
 ## [0.1.4] - 2026-08-05
 
 ### Fixed
