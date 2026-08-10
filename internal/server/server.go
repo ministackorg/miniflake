@@ -237,9 +237,20 @@ type queryRequestBody struct {
 }
 
 type rowTypeField struct {
-	Name     string `json:"name"`
-	Type     string `json:"type"`
-	Nullable bool   `json:"nullable"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Length, Precision, Scale and ByteLength are pointers with no omitempty
+	// so a nil value marshals to JSON null rather than dropping the key.
+	// Strict drivers (snowflake-connector-python's ResultMetadata.from_column)
+	// read col["length"], col["precision"] and col["scale"] by direct key
+	// access, so the keys must always be present; null is accepted, a missing
+	// key is a KeyError. gosnowflake is unaffected either way (it unmarshals
+	// these into int64, and JSON null into a Go int is a no-op).
+	Length     *int `json:"length"`
+	Precision  *int `json:"precision"`
+	Scale      *int `json:"scale"`
+	ByteLength *int `json:"byteLength"`
+	Nullable   bool `json:"nullable"`
 }
 
 type queryResponseData struct {
@@ -345,6 +356,31 @@ func snowflakeTypeName(v interface{}) string {
 	}
 }
 
+func intPtr(n int) *int { return &n }
+
+// snowflakeColumnMetadata returns the length/precision/scale/byteLength that a
+// Snowflake rowtype entry carries for a given wire type. The values follow
+// Snowflake's own conventions: NUMBER reports precision/scale (default 38,0),
+// timestamps report scale (fractional-second digits, default 9), VARCHAR and
+// BINARY report length/byteLength, and everything else reports null. Callers
+// attach these so strict drivers can build their column metadata without a
+// KeyError; the exact magnitudes are best-effort, since the type itself is
+// inferred from the first row's value rather than a declared column type.
+func snowflakeColumnMetadata(typeName string) (length, precision, scale, byteLength *int) {
+	switch typeName {
+	case "fixed":
+		return nil, intPtr(38), intPtr(0), nil
+	case "text":
+		return intPtr(16777216), nil, nil, intPtr(16777216)
+	case "binary":
+		return intPtr(8388608), nil, nil, intPtr(8388608)
+	case "timestamp_ntz", "timestamp_ltz", "timestamp_tz", "time":
+		return nil, intPtr(0), intPtr(9), nil
+	default: // real, boolean, date, and anything else
+		return nil, nil, nil, nil
+	}
+}
+
 // cellToString converts a value from the engine into a string for the rowset.
 // Snowflake wire format sends dates as epoch days and timestamps as epoch
 // seconds with nanosecond fractions. The gosnowflake driver expects this.
@@ -365,10 +401,14 @@ func cellToString(v interface{}) string {
 	case []byte:
 		return fmt.Sprintf("%x", val)
 	case bool:
+		// Snowflake wire format encodes booleans as "1"/"0", not "true"/"false".
+		// gosnowflake accepts both (strconv.ParseBool), but
+		// snowflake-connector-python treats a value as true only if it is "1"
+		// or "TRUE", so "true" would silently decode to False.
 		if val {
-			return "true"
+			return "1"
 		}
-		return "false"
+		return "0"
 	default:
 		return fmt.Sprintf("%v", val)
 	}
@@ -569,10 +609,15 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 			if len(result.Rows) > 0 && i < len(result.Rows[0]) {
 				typeName = snowflakeTypeName(result.Rows[0][i])
 			}
+			length, precision, scale, byteLength := snowflakeColumnMetadata(typeName)
 			rowType[i] = rowTypeField{
-				Name:     col,
-				Type:     typeName,
-				Nullable: true,
+				Name:       col,
+				Type:       typeName,
+				Length:     length,
+				Precision:  precision,
+				Scale:      scale,
+				ByteLength: byteLength,
+				Nullable:   true,
 			}
 		}
 
@@ -627,10 +672,15 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 			if len(rows) > 0 && i < len(rows[0]) {
 				typeName = snowflakeTypeName(rows[0][i])
 			}
+			length, precision, scale, byteLength := snowflakeColumnMetadata(typeName)
 			rowType[i] = rowTypeField{
-				Name:     col,
-				Type:     typeName,
-				Nullable: true,
+				Name:       col,
+				Type:       typeName,
+				Length:     length,
+				Precision:  precision,
+				Scale:      scale,
+				ByteLength: byteLength,
+				Nullable:   true,
 			}
 		}
 
@@ -672,7 +722,7 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 				QueryID:           queryID,
 				SQLText:           sqlText,
 				QueryResultFormat: "json",
-				RowType:           []rowTypeField{{Name: "rows_affected", Type: "fixed", Nullable: false}},
+				RowType:           []rowTypeField{{Name: "rows_affected", Type: "fixed", Precision: intPtr(38), Scale: intPtr(0), Nullable: false}},
 				RowSet:            [][]interface{}{{fmt.Sprintf("%d", affected)}},
 				Total:             1,
 				Returned:          1,
@@ -772,10 +822,15 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 		if len(rows) > 0 && i < len(rows[0]) {
 			typeName = snowflakeTypeName(rows[0][i])
 		}
+		length, precision, scale, byteLength := snowflakeColumnMetadata(typeName)
 		rowType[i] = map[string]interface{}{
-			"name":     col,
-			"type":     typeName,
-			"nullable": true,
+			"name":       col,
+			"type":       typeName,
+			"length":     length,
+			"precision":  precision,
+			"scale":      scale,
+			"byteLength": byteLength,
+			"nullable":   true,
 		}
 	}
 
