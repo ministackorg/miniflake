@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -383,5 +385,141 @@ func TestSession_HeartbeatUpdatesActivity(t *testing.T) {
 	got, _ := s.sessionMgr.GetSession(sess.Token)
 	if !got.LastActiveAt.After(before) {
 		t.Errorf("LastActiveAt not updated: %v vs %v", got.LastActiveAt, before)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// gzip request bodies
+// ---------------------------------------------------------------------------
+
+func gzipBytes(t *testing.T, b []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write(b); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestHasGzipEncoding(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		header string
+		want   bool
+	}{
+		{"", false},
+		{"gzip", true},
+		{"GZIP", true},
+		{" gzip ", true},
+		{"deflate, gzip", true},
+		{"gzip, deflate", true},
+		{"deflate", false},
+		{"identity", false},
+		{"x-gzip", false},
+	} {
+		if got := hasGzipEncoding(tc.header); got != tc.want {
+			t.Errorf("hasGzipEncoding(%q) = %v, want %v", tc.header, got, tc.want)
+		}
+	}
+}
+
+func TestWithDecompressedBody_InflatesGzip(t *testing.T) {
+	t.Parallel()
+	var got string
+	h := withDecompressedBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+		}
+		got = string(b)
+		if enc := r.Header.Get("Content-Encoding"); enc != "" {
+			t.Errorf("Content-Encoding still set: %q", enc)
+		}
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request",
+		bytes.NewReader(gzipBytes(t, []byte(`{"hello":"world"}`))))
+	r.Header.Set("Content-Encoding", "gzip")
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if got != `{"hello":"world"}` {
+		t.Fatalf("body = %q, want the inflated JSON", got)
+	}
+}
+
+func TestWithDecompressedBody_PassesThroughUncompressed(t *testing.T) {
+	t.Parallel()
+	var got string
+	h := withDecompressedBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = string(b)
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request",
+		strings.NewReader(`{"hello":"world"}`))
+	h.ServeHTTP(httptest.NewRecorder(), r)
+
+	if got != `{"hello":"world"}` {
+		t.Fatalf("body = %q, want it untouched", got)
+	}
+}
+
+func TestWithDecompressedBody_MalformedGzipIsBadRequest(t *testing.T) {
+	t.Parallel()
+	called := false
+	h := withDecompressedBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request",
+		strings.NewReader("this is not gzip"))
+	r.Header.Set("Content-Encoding", "gzip")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+
+	if called {
+		t.Fatal("handler ran on a malformed gzip body")
+	}
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", w.Code, http.StatusBadRequest)
+	}
+}
+
+// TestLogin_AcceptsGzippedBody is the regression test for the driver-facing
+// bug: snowflake-connector-python gzips every request body, so a gzipped
+// login-request must authenticate rather than fail to parse.
+func TestLogin_AcceptsGzippedBody(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	payload := loginRequestBody{}
+	payload.Data.AccountName = "miniflake"
+	payload.Data.LoginName = "test"
+	payload.Data.Password = "test"
+	buf, _ := json.Marshal(payload)
+
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request",
+		bytes.NewReader(gzipBytes(t, buf)))
+	r.Header.Set("Content-Encoding", "gzip")
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	// Drive the composed handler chain, not the bare handler, so the
+	// middleware is exercised the way a real request would be.
+	s.httpServer.Handler.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", w.Code, http.StatusOK, w.Body.String())
+	}
+	var body snowflakeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !body.Success {
+		t.Fatalf("login failed on a gzipped body: %#v", body)
 	}
 }
