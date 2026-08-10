@@ -4,6 +4,23 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-10
+
+### Fixed
+- **Gzip-encoded request bodies are now decompressed.**
+  `snowflake-connector-python` gzips every request body it sends,
+  including the initial `login-request`, and sets `Content-Encoding:
+  gzip`. The wire-protocol handlers passed `r.Body` straight to
+  `json.Decode`, which fails on a gzip stream, so the Python connector was
+  rejected with `400 "invalid request body"` and could never
+  authenticate. A `withDecompressedBody` middleware now inflates the body
+  when `Content-Encoding` selects gzip, covering every current handler and
+  any route added later in one place. `gosnowflake` does not compress
+  requests, which is why the integration suite never caught it. This
+  unblocks the Python connector's login only; a subsequent query still
+  fails on a separate response-shape gap (the query rowtype omits the
+  `length` field the connector requires). Contributed by @frazier-at-cpcc.
+
 ## [0.1.4] - 2026-08-05
 
 ### Fixed
@@ -178,6 +195,7 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
+[0.1.5]: https://github.com/ministackorg/miniflake/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/ministackorg/miniflake/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ministackorg/miniflake/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/ministackorg/miniflake/compare/v0.1.1...v0.1.2
