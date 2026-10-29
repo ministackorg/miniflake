@@ -71,7 +71,7 @@ body:
     id: version
     attributes:
       label: MiniFlake version
-      placeholder: "e.g. v0.1.0 or latest (and the image digest if Docker)"
+      placeholder: "e.g. v0.2.0 or latest (and the image digest if Docker)"
     validations:
       required: true
 
@@ -79,7 +79,7 @@ body:
     id: driver
     attributes:
       label: Driver / tool used
-      placeholder: "e.g. gosnowflake 1.19.1 / snowflake-connector-python 3.7 / snowflake-jdbc 3.16 / DBT / Terraform / direct HTTP"
+      placeholder: "e.g. gosnowflake v2.3.0 / snowflake-connector-python 3.7 / snowflake-jdbc 3.16 / DBT / Terraform / direct HTTP"
     validations:
       required: true
 

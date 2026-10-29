@@ -25,11 +25,14 @@ miniflake/
 │   ├── udf/                      # SQL + Python UDFs
 │   ├── rbac/                     # GRANT/REVOKE parsing
 │   ├── snowpipe/                 # Pipe metadata + REST insert
-│   └── copyinto/                 # COPY INTO parser + executor
+│   ├── copyinto/                 # COPY INTO parser + executor
+│   └── accountusage/ alert/ dynamictable/ extfunc/ matview/ network/
+│       protocol/ sequence/ sharing/ tag/
+│                                 # Subsystem code not yet wired into the
+│                                 # orchestrator; not reachable via SQL
 ├── test/integration/             # gosnowflake-driven end-to-end tests
 ├── Dockerfile
 ├── go.mod / go.sum
-├── Makefile
 ├── CHANGELOG.md
 └── .github/
     ├── workflows/                # test, docker, release
@@ -39,7 +42,7 @@ miniflake/
 
 ---
 
-## For infrastructure changes (Dockerfile, CI, Makefile, dependencies), open an issue first.
+## For infrastructure changes (Dockerfile, CI, dependencies), open an issue first.
 
 PRs changing CI, the Dockerfile, the release flow, or the dependency graph
 without a prior issue will be asked to back up and discuss the design.
@@ -156,23 +159,23 @@ table-driven test case to `internal/rewriter/rewriter_test.go`.
 
 ## Running Tests Locally
 
-Requires Go 1.26+ and a C toolchain (DuckDB binding is cgo).
+Requires Go 1.26+ and a C toolchain (DuckDB binding is cgo,
+`github.com/duckdb/duckdb-go/v2`, DuckDB 2.0). Its prebuilt libraries are
+fetched from `go.duckdb.org`; allow it if you restrict `GOPROXY`.
 
 ```bash
 # Unit tests with race detector
-make test
+go test -race -count=1 ./...
 
 # Integration tests (build tag `integration`, gosnowflake driver)
-make test-integration
+go test -race -count=1 -tags=integration ./test/integration/
 
-# Both
-make test && make test-integration
 
 # Single test
 go test -race -run TestMergeUpsert -tags=integration ./test/integration/
 
 # Format + vet
-make fmt
+gofmt -l . && go vet ./... && go vet -tags=integration ./test/...
 ```
 
 CI runs the same commands in `.github/workflows/test.yml`.
@@ -194,12 +197,15 @@ CI runs the same commands in `.github/workflows/test.yml`.
 - **No external Snowflake deps** — no `snowflake-connector-*` in the
   service code. The `gosnowflake` package is allowed in
   `test/integration/` only.
-- **Logging** — `logger := logger.With(zap.String("subsystem", "foo"))`.
-  DEBUG for per-request detail, INFO for lifecycle events. Avoid
-  `fmt.Println` in production code (we strip these in code review).
+- **Logging** — standard library `log`; prefix messages with the
+  subsystem (`log.Printf("task: ...")`). Avoid `fmt.Println` in production
+  code (we strip these in code review).
 - **Error responses** — match real Snowflake error codes and HTTP
   status codes where they're documented. Use code `002043` for generic
-  exec failures (matches gosnowflake's `ExecContext` expectation).
+  exec failures (matches gosnowflake's `ExecContext` expectation). Specific
+  engine errors are mapped to their Snowflake code, SQLSTATE and message in
+  `queryFailure` (`internal/server/server.go`) — e.g. division by zero →
+  `100051` / `22012` / `Division by zero`. Add new mappings there.
 - **gofmt + go vet + staticcheck must be clean.**
 
 ---
@@ -213,7 +219,7 @@ CI runs the same commands in `.github/workflows/test.yml`.
 - [ ] Feature matrix in `README.md` updated (move 🟡 → ✅ only with an
       integration test backing the claim)
 - [ ] `CHANGELOG.md` entry under `## [Unreleased]`
-- [ ] `make test && make test-integration` green locally
+- [ ] Unit and integration tests green locally
 - [ ] `gofmt -w .` and `go vet ./...` clean
 - [ ] `staticcheck ./...` clean (or noisy items justified in the PR
       description)
@@ -222,12 +228,17 @@ CI runs the same commands in `.github/workflows/test.yml`.
 
 ## What We're Looking For
 
-High-value contributions right now (state of the project as of v0.1.0):
+High-value contributions right now (state of the project as of v0.2.0):
 
 - **`AT (STATEMENT => 'id')`** — statement-id-keyed time travel; today
   only OFFSET and TIMESTAMP work.
 - **More `Information Schema` views** (`TABLE_PRIVILEGES`,
   `ROLE_GRANTS`).
+- **`ALTER SESSION SET`** — session parameters are fixed at their
+  defaults today; the engine always runs in `America/Los_Angeles`.
+- **Native `VARIANT` and `MERGE`** — DuckDB 2.0 has a first-class
+  `VARIANT` type and full `MERGE INTO`; MiniFlake still maps `VARIANT`
+  to `JSON` and supports single-key upsert `MERGE` only.
 
 ---
 

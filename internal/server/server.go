@@ -200,6 +200,22 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // Request / response types
 // ---------------------------------------------------------------------------
 
+// queryFailure maps an execution error to the Snowflake error code, message
+// and response data for a FAILED_WITH_ERROR query. Errors without a specific
+// Snowflake equivalent fall back to the generic 002043.
+func queryFailure(err error, queryID, sqlText string) (code, msg string, data map[string]interface{}) {
+	code, msg = "002043", err.Error()
+	sqlState := ""
+	if strings.Contains(msg, "Division by zero") {
+		code, msg, sqlState = "100051", "Division by zero", "22012"
+	}
+	data = map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText}
+	if sqlState != "" {
+		data["sqlState"] = sqlState
+	}
+	return code, msg, data
+}
+
 type snowflakeResponse struct {
 	Data    interface{} `json:"data"`
 	Code    *string     `json:"code"`
@@ -482,7 +498,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SessionID:           int64(atomic.AddUint64(&sessionIDCounter, 1)),
 		MasterValidityInSec: 14400,
 		DisplayUserName:     strings.ToUpper(body.Data.LoginName),
-		ServerVersion:       "8.0.0",
+		ServerVersion:       "10.37.0", // Snowflake release current as of 2026-10
 		SessionInfo: loginSessionInfo{
 			DatabaseName:  database,
 			SchemaName:    schema,
@@ -601,10 +617,9 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := s.orchestrator.ExecuteSQL(ctx, sess, sqlText)
 		if err != nil {
-			code := "002043"
-			msg := err.Error()
+			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText},
+				Data:    data,
 				Code:    &code,
 				Message: &msg,
 				Success: false,
@@ -664,10 +679,9 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	if isQuery {
 		cols, rows, err := s.engine.Execute(ctx, sqlText)
 		if err != nil {
-			code := "002043"
-			msg := err.Error()
+			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText},
+				Data:    data,
 				Code:    &code,
 				Message: &msg,
 				Success: false,
@@ -714,10 +728,9 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	} else {
 		affected, err := s.engine.ExecNoResult(ctx, sqlText)
 		if err != nil {
-			code := "002043"
-			msg := err.Error()
+			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText},
+				Data:    data,
 				Code:    &code,
 				Message: &msg,
 				Success: false,

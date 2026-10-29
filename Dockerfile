@@ -1,6 +1,6 @@
 FROM golang:1.26-bookworm AS builder
 
-# go-duckdb links a prebuilt C++ libduckdb.a; Debian's stock toolchain
+# duckdb-go links a prebuilt C++ libduckdb.a; Debian's stock toolchain
 # (gcc + libstdc++ + dev symlinks) resolves -lstdc++ out of the box.
 # Alpine's musl setup needs extra package juggling for the same result.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,7 +12,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=1 go build -ldflags "-s -w" -o /miniflake ./cmd/miniflake \
+# Stamped by .github/workflows/docker.yml from the release tag; local
+# `docker build` reports "dev".
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=1 go build -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT}" -o /miniflake ./cmd/miniflake \
     && mkdir -p /tmp/empty-data /tmp/empty-stages
 
 # Distroless runtime: contains glibc + libstdc++ + ca-certificates and

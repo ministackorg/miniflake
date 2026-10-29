@@ -16,9 +16,9 @@ jobs:
       matrix:
         # macOS runners are billed at 10× rate against the free Actions
         # quota and DuckDB's cgo build burns 15–30 min per arch on a fresh
-        # runner. macOS users go through `docker pull` or `make build`
+        # runner. macOS users go through `docker pull` or `go build`
         # instead. Re-add darwin here when the project moves off free tier
-        # or when DuckDB ships native-arch wheels for go-duckdb.
+        # or when DuckDB ships native-arch builds for duckdb-go.
         target:
           - { label: linux-amd64, runner: ubuntu-latest, goos: linux, goarch: amd64 }
     steps:

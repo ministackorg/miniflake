@@ -97,7 +97,7 @@ func TestRewrite(t *testing.T) {
 		{
 			name:   "div0null function",
 			input:  "SELECT DIV0NULL(a, b) FROM t",
-			expect: "SELECT CASE WHEN b = 0 THEN NULL ELSE a / b END FROM t",
+			expect: "SELECT CASE WHEN COALESCE(b, 0) = 0 THEN 0 ELSE a / b END FROM t",
 		},
 
 		// 8. ARRAY_CONSTRUCT / ARRAY_SIZE

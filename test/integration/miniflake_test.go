@@ -7,6 +7,7 @@ import (
 	"crypto/md5"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -1033,8 +1034,9 @@ func TestDivisionByZero(t *testing.T) {
 	for _, q := range []string{"SELECT 1 / 0", "SELECT 1.5 / 0", "SELECT 1::FLOAT / 0"} {
 		var v sql.NullFloat64
 		err := db.QueryRow(q).Scan(&v)
-		if err == nil || !strings.Contains(err.Error(), "Division by zero") {
-			t.Errorf("%s = %v, err %v; want Division by zero error", q, v, err)
+		var sfErr *sf.SnowflakeError
+		if !errors.As(err, &sfErr) || sfErr.Number != 100051 || sfErr.SQLState != "22012" || sfErr.Message != "Division by zero" {
+			t.Errorf("%s = %v, err %v; want SnowflakeError 100051 (22012) Division by zero", q, v, err)
 		}
 	}
 
@@ -1042,9 +1044,12 @@ func TestDivisionByZero(t *testing.T) {
 	if err := db.QueryRow("SELECT DIV0(1, 0)").Scan(&d0); err != nil || d0 != 0 {
 		t.Errorf("DIV0(1, 0) = %v, err %v; want 0", d0, err)
 	}
-	var dn sql.NullFloat64
-	if err := db.QueryRow("SELECT DIV0NULL(1, 0)").Scan(&dn); err != nil || dn.Valid {
-		t.Errorf("DIV0NULL(1, 0) = %v, err %v; want NULL", dn, err)
+	// DIV0NULL returns 0 for a zero or NULL divisor, not NULL.
+	for _, q := range []string{"SELECT DIV0NULL(1, 0)", "SELECT DIV0NULL(1, NULL)"} {
+		var dn sql.NullFloat64
+		if err := db.QueryRow(q).Scan(&dn); err != nil || !dn.Valid || dn.Float64 != 0 {
+			t.Errorf("%s = %v, err %v; want 0", q, dn, err)
+		}
 	}
 }
 

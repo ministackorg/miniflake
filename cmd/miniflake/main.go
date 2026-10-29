@@ -32,7 +32,8 @@ import (
 	"github.com/miniflakedb/miniflake/internal/udf"
 )
 
-// Build-time variables (populated by Makefile via -ldflags).
+// Build-time variables (populated via -ldflags by the release and docker
+// workflows).
 var (
 	version = "dev"
 	commit  = "unknown"

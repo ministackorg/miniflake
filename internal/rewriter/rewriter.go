@@ -378,13 +378,14 @@ func rewriteNVL(sql string) string {
 	})
 }
 
-// 7. DIV0NULL(a, b) → CASE WHEN b = 0 THEN NULL ELSE a / b END
+// 7. DIV0NULL(a, b) → CASE WHEN COALESCE(b, 0) = 0 THEN 0 ELSE a / b END
+// Snowflake returns 0 (not NULL) when the divisor is 0 or NULL.
 func rewriteDIV0NULL(sql string) string {
 	return replaceFuncCall(sql, "DIV0NULL", func(args []string) string {
 		if len(args) < 2 {
 			return "DIV0NULL(" + strings.Join(args, ", ") + ")"
 		}
-		return "CASE WHEN " + args[1] + " = 0 THEN NULL ELSE " + args[0] + " / " + args[1] + " END"
+		return "CASE WHEN COALESCE(" + args[1] + ", 0) = 0 THEN 0 ELSE " + args[0] + " / " + args[1] + " END"
 	})
 }
 

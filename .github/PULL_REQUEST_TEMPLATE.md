@@ -5,7 +5,8 @@ Thanks for the PR. A few things to know:
    has the details). PRs without one will be asked to back up.
 2. Feature-matrix markers in README.md don't move from 🟡 → ✅ without
    an integration test backing the claim.
-3. Run `make test && make test-integration` locally before pushing.
+3. Run the unit and integration tests locally before pushing
+   (see CONTRIBUTING.md, "Running Tests Locally").
 -->
 
 ## Summary
@@ -26,9 +27,9 @@ Closes #
 
 <!-- Show what you ran and the output. -->
 
-- [ ] `make test` (unit, race-enabled)
-- [ ] `make test-integration` (gosnowflake-driven)
-- [ ] `make fmt` (gofmt + go vet)
+- [ ] `go test -race -count=1 ./...` (unit)
+- [ ] `go test -race -count=1 -tags=integration ./test/integration/` (gosnowflake-driven)
+- [ ] `gofmt -l .` empty and `go vet ./...` clean
 - [ ] New tests added for the changed code path
 
 ## Snowflake parity check

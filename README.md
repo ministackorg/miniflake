@@ -1,6 +1,6 @@
 <h1 align="center">MiniFlake</h1>
 <p align="center"><strong>Free, open-source local Snowflake emulator.</strong></p>
-<p align="center">Snowflake wire protocol on a single port · gosnowflake / Python / JDBC compatible · DuckDB engine · MIT licensed</p>
+<p align="center">Snowflake wire protocol on a single port · gosnowflake / Python / JDBC compatible · DuckDB 2.0 engine · MIT licensed</p>
 
 <p align="center">
   <a href="https://github.com/ministackorg/miniflake/actions"><img src="https://img.shields.io/github/actions/workflow/status/ministackorg/miniflake/test.yml?branch=main" alt="Build"></a>
@@ -24,7 +24,7 @@ Local Snowflake is hard. Snowflake's official testing options are either expensi
 MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Your application code uses the unmodified `gosnowflake` / `snowflake-connector-python` / JDBC drivers, just pointed at `localhost:8084` instead of `account.snowflakecomputing.com`. The driver does its handshake, the rewriter translates Snowflake SQL to DuckDB SQL, and DuckDB executes — same DSL on both sides means the same query that works locally works against the real warehouse.
 
 - **Drop-in for the Snowflake drivers** — gosnowflake, snowflake-connector-python, JDBC. No app code changes, just the endpoint.
-- **DuckDB engine** — fast in-process analytics, real query planning, real window functions, real CTEs.
+- **DuckDB 2.0 engine** — fast in-process analytics, real query planning, real window functions, real CTEs.
 - **Snowflake-specific surface** — `MERGE`, `LATERAL FLATTEN`, `QUALIFY`, `VARIANT`/`OBJECT`/`ARRAY`, `PARSE_JSON`, `OBJECT_CONSTRUCT`, semi-structured access (`col:key`, `col[0]`).
 - **Streams, Tasks, Pipes, Time Travel, UNDROP** — the Snowflake control plane features your DBT/CDC/orchestrator code actually depends on.
 - **Single binary, single port** — no `docker compose` sprawl, no per-feature containers.
@@ -35,8 +35,8 @@ MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Y
 ## Quick Start
 
 ```bash
-# Option 1: Docker (image published to GHCR on every push to main and on
-# every v* tag — see .github/workflows/docker.yml)
+# Option 1: Docker (image published to GHCR on every v* tag — see
+# .github/workflows/docker.yml)
 docker run -p 8084:8084 ghcr.io/ministackorg/miniflake:latest
 # Runs on http://localhost:8084 — use --port to change
 
@@ -44,7 +44,7 @@ docker run -p 8084:8084 ghcr.io/ministackorg/miniflake:latest
 # binaries cover linux/amd64; macOS users build locally or use Docker)
 git clone https://github.com/ministackorg/miniflake
 cd miniflake
-make build
+go build -o bin/miniflake ./cmd/miniflake
 ./bin/miniflake
 
 # Option 3: docker compose
@@ -65,6 +65,8 @@ MiniFlake speaks the Snowflake HTTP wire protocol. Point any Snowflake driver at
 **Go (gosnowflake):**
 
 ```go
+import "github.com/snowflakedb/gosnowflake/v2" // v1 is affected by GO-2026-6665
+
 cfg := &gosnowflake.Config{
     Account:  "miniflake",
     User:     "test",
@@ -115,11 +117,14 @@ curl -k https://localhost:8084/_miniflake/health
 
 ## Internal API
 
-MiniFlake exposes one internal endpoint today; more will land as the test-automation surface stabilises.
+MiniFlake exposes two internal endpoints today; more will land as the test-automation surface stabilises.
 
 ```bash
 # Health check
 curl http://localhost:8084/_miniflake/health
+
+# Wipe all state between CI runs (tables, schemas, stages, streams, tasks, pipes)
+curl -X POST http://localhost:8084/_miniflake/reset
 
 # Snowpipe REST ingest
 curl -X POST http://localhost:8084/v1/data/pipes/TESTDB/PUBLIC/my_pipe/insertFiles \
@@ -127,7 +132,7 @@ curl -X POST http://localhost:8084/v1/data/pipes/TESTDB/PUBLIC/my_pipe/insertFil
   -d '{"files":[{"path":"data/file1.csv","size":1024}]}'
 ```
 
-To set the data directory, stage directory, or port, use flags or env vars at startup:
+To set the data directory, stage directory, or port, use flags at startup:
 
 ```bash
 ./miniflake --port 9000 --data-dir /var/miniflake/data --stage-dir /var/miniflake/stages
@@ -231,7 +236,7 @@ Client (gosnowflake / Python / JDBC)
           |
           v
    +--------------+
-   | DuckDB Engine|  Execution + storage
+   | DuckDB Engine|  DuckDB 2.0: execution + storage
    +--------------+
           |
           v
@@ -242,7 +247,7 @@ In-process subsystems (each is a Go package under `internal/`):
 
 | Package | Responsibility |
 |---|---|
-| `engine` | DuckDB connection + query/exec abstractions |
+| `engine` | DuckDB connection + query/exec abstractions; Snowflake session defaults (`America/Los_Angeles` time zone, `Division by zero` errors) |
 | `catalog` | Database/schema/table metadata |
 | `stage` | Filesystem-backed Snowflake stages |
 | `stream` | Table streams (CDC), change records, `SYSTEM$STREAM_HAS_DATA` |
@@ -269,25 +274,27 @@ In-process subsystems (each is a Go package under `internal/`):
 | `--stage-dir` | `./stages` | Internal stages directory |
 | `--tls-cert` | (auto) | TLS certificate PEM. If unset, a self-signed cert is generated and persisted at `<data-dir>/miniflake-cert.pem`. |
 | `--tls-key` | (auto) | TLS private key PEM. If unset, generated alongside the cert. |
-| `--log-level` | `info` | Log level (debug, info, warn, error) |
-| `--read-only` | `false` | Read-only mode |
+| `--log-level` | `info` | Accepted for compatibility; not implemented yet (no effect) |
+| `--read-only` | `false` | Accepted for compatibility; not implemented yet (no effect) |
 | `--version` | — | Print version and exit |
 
 ---
 
 ## Development
 
-Requires Go 1.26+ (the DuckDB binding is cgo-based, so a C toolchain is needed too — `build-essential` on Debian/Ubuntu, Xcode CLT on macOS).
+Requires Go 1.26+ (the DuckDB binding is cgo-based, so a C toolchain is needed too — `build-essential` on Debian/Ubuntu, Xcode CLT on macOS). The prebuilt DuckDB libraries are Go modules served from `go.duckdb.org`; if you restrict `GOPROXY`, allow it (or use the default `proxy.golang.org`).
+
+Upgrading from MiniFlake ≤ 0.1.5: DuckDB 2.0 opens existing `--data-dir` databases, but files it creates can't be read by DuckDB 1.x. Back up `--data-dir` before upgrading if you might roll back.
 
 ```bash
-make build              # Build binary at ./bin/miniflake
-make test               # Unit tests with race detector
-make test-integration   # Integration tests via gosnowflake (uses build tag `integration`)
-make docker             # Build Docker image
-make fmt                # gofmt + go vet
+go build -o bin/miniflake ./cmd/miniflake                    # Build binary at ./bin/miniflake
+go test -race -count=1 ./...                                 # Unit tests with race detector
+go test -race -count=1 -tags=integration ./test/integration/ # Integration tests via gosnowflake
+docker build -t miniflake .                                  # Build Docker image
+gofmt -l . && go vet ./...                                   # Format check + vet
 ```
 
-CI runs the same targets on every push and PR via `.github/workflows/test.yml` (Ubuntu + macOS, Go 1.26) plus a `lint` job (gofmt, vet, staticcheck). The `docker.yml` workflow builds the image (no push from PRs) and smoke-tests `/health`.
+CI runs the same commands on every push and PR via `.github/workflows/test.yml` (Ubuntu + macOS, Go 1.26) plus a `lint` job (gofmt, vet, staticcheck). The `docker.yml` workflow builds the image (no push from PRs) and smoke-tests `/health`.
 
 ### Contributing
 

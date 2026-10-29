@@ -4,9 +4,46 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-29
+
+### Changed
+- **DuckDB 2.0.0 LTS.** The engine moves from `github.com/marcboeker/go-duckdb`
+  v1.8.5 (DuckDB 1.2) to `github.com/duckdb/duckdb-go/v2` v2.20000.0
+  (DuckDB 2.0.0). **Storage format:** DuckDB 2.0 can still open existing
+  `--data-dir` databases, but databases it creates use storage version 69,
+  which DuckDB 1.x (MiniFlake ≤ 0.1.5) cannot read. Back up `--data-dir`
+  before upgrading if you might need to roll back. The native libraries are
+  now fetched from `go.duckdb.org`; builds behind a restricted `GOPROXY`
+  must allow it.
+- **The engine runs in the Snowflake default time zone.** Every DuckDB
+  connection uses `America/Los_Angeles`, matching the `TIMEZONE` session
+  default reported by `SHOW PARAMETERS` and the login response, instead of
+  the host's local time zone.
+- **`serverVersion` in the login response is now `10.37.0`** (was `8.0.0`).
+- **Removed the `Makefile`.** CI, the release workflow and the Dockerfile
+  never used it; README and CONTRIBUTING now list the plain `go` / `docker`
+  commands. Local builds report version `dev`; release binaries are
+  stamped by the release workflow from the tag.
+- **Docker images report their release version.** The Dockerfile built
+  without `-X main.version`, so every published image reported `dev`;
+  `docker.yml` now passes the tag version and commit as build args.
+- **Integration tests use `gosnowflake/v2` v2.3.0.** gosnowflake v1 is
+  affected by GO-2026-6665 / CVE-2026-86597 (sensitive data written to
+  logs), which has no v1 fix. Only the test suite depended on it.
 
 ### Fixed
+- **`REGEXP_LIKE`, `RLIKE` and `REGEXP` now match the whole string.**
+  Snowflake implicitly anchors the pattern at both ends, so `'abc' RLIKE 'b'`
+  is `FALSE`. They were rewritten to DuckDB's `regexp_matches`, which
+  matches anywhere in the string; they now use `regexp_full_match`. `NOT
+  RLIKE` and quoted patterns containing spaces are rewritten correctly too.
+- **Division by zero raises Snowflake's error.** `x / 0` returned `NULL`
+  (DuckDB 1.x) and would have returned `inf` on DuckDB 2.0. It now fails
+  with error `100051`, SQLSTATE `22012`, message `Division by zero`, like
+  Snowflake. `DIV0` still returns 0.
+- **`DIV0NULL` returns 0 for a zero or NULL divisor.** It returned `NULL`
+  when the divisor was 0 and divided by `NULL` otherwise; Snowflake returns
+  0 in both cases.
 - **Login response now returns the default session parameters.** The
   `/session/v1/login-request` handler returned an empty `parameters` array,
   so clients that read session parameters from the login response got
@@ -14,7 +51,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Boolean and failed without it (#25). The response now carries the same
   default catalog as `SHOW PARAMETERS`, with native JSON types: booleans as
   `true`/`false`, numbers as integers and everything else as strings. Also
-  adds the missing `CLIENT_RESULT_CHUNK_SIZE` (160) default.
+  adds the missing `CLIENT_RESULT_CHUNK_SIZE` (160) default. Contributed by
+  @ivanmarban.
 
 ## [0.1.5] - 2026-08-10
 
@@ -221,6 +259,7 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
+[0.2.0]: https://github.com/ministackorg/miniflake/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/ministackorg/miniflake/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/ministackorg/miniflake/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/ministackorg/miniflake/compare/v0.1.2...v0.1.3
