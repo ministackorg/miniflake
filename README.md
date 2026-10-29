@@ -7,7 +7,7 @@
   <a href="https://github.com/ministackorg/miniflake/pkgs/container/miniflake"><img src="https://img.shields.io/badge/ghcr.io-ministackorg%2Fminiflake-blue?logo=github" alt="GHCR"></a>
   <a href="https://github.com/ministackorg/miniflake/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ministackorg/miniflake" alt="License"></a>
   <img src="https://img.shields.io/badge/go-1.26-blue" alt="Go">
-  <img src="https://img.shields.io/badge/duckdb-1.8-yellow" alt="DuckDB">
+  <img src="https://img.shields.io/badge/duckdb-2.0-yellow" alt="DuckDB">
   <img src="https://img.shields.io/badge/status-active%20development-orange" alt="Status">
 </p>
 
