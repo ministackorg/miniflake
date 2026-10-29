@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"strconv"
 	"testing"
 )
 
@@ -88,6 +89,49 @@ func TestHandleShowParametersInAccount(t *testing.T) {
 	if len(accountRows.Rows) <= len(sessionRows.Rows) {
 		t.Fatalf("IN ACCOUNT should include account params; session=%d account=%d",
 			len(sessionRows.Rows), len(accountRows.Rows))
+	}
+}
+
+func TestDefaultSessionParameters_TypedValues(t *testing.T) {
+	got := DefaultSessionParameters()
+	if len(got) != len(defaultSessionParameters) {
+		t.Fatalf("got %d parameters, want %d", len(got), len(defaultSessionParameters))
+	}
+	for i, def := range defaultSessionParameters {
+		p := got[i]
+		if p.Name != def.Key {
+			t.Errorf("[%d] name = %q, want %q", i, p.Name, def.Key)
+		}
+		switch def.Type {
+		case "BOOLEAN":
+			if def.Value != "true" && def.Value != "false" {
+				t.Errorf("%s: BOOLEAN value %q must be true or false", def.Key, def.Value)
+			}
+			v, ok := p.Value.(bool)
+			if !ok {
+				t.Errorf("%s: value is %T, want bool", def.Key, p.Value)
+			} else if v != (def.Value == "true") {
+				t.Errorf("%s: value = %v, want %s", def.Key, v, def.Value)
+			}
+		case "NUMBER":
+			n, err := strconv.ParseInt(def.Value, 10, 64)
+			if err != nil {
+				t.Errorf("%s: NUMBER value %q is not an integer", def.Key, def.Value)
+				continue
+			}
+			v, ok := p.Value.(int64)
+			if !ok {
+				t.Errorf("%s: value is %T, want int64", def.Key, p.Value)
+			} else if v != n {
+				t.Errorf("%s: value = %d, want %d", def.Key, v, n)
+			}
+		case "STRING":
+			if v, ok := p.Value.(string); !ok || v != def.Value {
+				t.Errorf("%s: value = %#v, want string %q", def.Key, p.Value, def.Value)
+			}
+		default:
+			t.Errorf("%s: unknown type %q", def.Key, def.Type)
+		}
 	}
 }
 

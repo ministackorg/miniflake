@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/miniflakedb/miniflake/internal/orchestrator"
 	"github.com/miniflakedb/miniflake/internal/session"
 )
 
@@ -372,8 +374,114 @@ func TestLogin_IncludesSessionInfoAndParameters(t *testing.T) {
 	if got := resp.Data.SessionInfo.SchemaName; got != "PUBLIC" {
 		t.Errorf("sessionInfo.schemaName = %q, want PUBLIC", got)
 	}
-	if resp.Data.Parameters == nil {
-		t.Error("parameters must be a non-nil array, got null")
+	if len(resp.Data.Parameters) == 0 {
+		t.Error("parameters must be a non-empty array")
+	}
+}
+
+type loginWireParameter struct {
+	Name  string          `json:"name"`
+	Value json.RawMessage `json:"value"`
+}
+
+func loginWireParameters(t *testing.T, s *Server) []loginWireParameter {
+	t.Helper()
+	buf, err := json.Marshal(loginRequestBody{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/session/v1/login-request", bytes.NewReader(buf))
+	s.handleLogin(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: %d", w.Code)
+	}
+
+	var resp struct {
+		Data struct {
+			Parameters []loginWireParameter `json:"parameters"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return resp.Data.Parameters
+}
+
+// Regression for #25: the JDBC driver unboxes AUTOCOMMIT as a Boolean
+func TestLogin_ParametersIssue25ExpectedValues(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	got := map[string]string{}
+	for _, p := range loginWireParameters(t, s) {
+		got[p.Name] = string(p.Value)
+	}
+	want := map[string]string{
+		"AUTOCOMMIT":               `true`,
+		"TIMEZONE":                 `"America/Los_Angeles"`,
+		"TIMESTAMP_OUTPUT_FORMAT":  `"YYYY-MM-DD HH24:MI:SS.FF3 TZHTZM"`,
+		"CLIENT_RESULT_CHUNK_SIZE": `160`,
+	}
+	for name, raw := range want {
+		if got[name] != raw {
+			t.Errorf("parameter %s = %s, want %s", name, got[name], raw)
+		}
+	}
+}
+
+func TestLogin_ParametersHaveTypedJSONValues(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	params := loginWireParameters(t, s)
+	if len(params) == 0 {
+		t.Fatal("parameters must be a non-empty array")
+	}
+
+	integer := regexp.MustCompile(`^-?\d+$`)
+	seen := map[string]bool{}
+	for _, p := range params {
+		if p.Name == "" {
+			t.Error("parameter with empty name")
+		}
+		if seen[p.Name] {
+			t.Errorf("duplicate parameter %s", p.Name)
+		}
+		seen[p.Name] = true
+
+		raw := string(p.Value)
+		switch {
+		case raw == "true" || raw == "false":
+		case integer.MatchString(raw):
+		case strings.HasPrefix(raw, `"`):
+			var str string
+			if err := json.Unmarshal(p.Value, &str); err != nil {
+				t.Errorf("parameter %s: invalid JSON string %s: %v", p.Name, raw, err)
+				continue
+			}
+			if str == "true" || str == "false" || integer.MatchString(str) {
+				t.Errorf("parameter %s = %s: boolean/number encoded as a JSON string", p.Name, raw)
+			}
+		default:
+			t.Errorf("parameter %s = %s: not a JSON boolean, integer, or string", p.Name, raw)
+		}
+	}
+}
+
+func TestLogin_ParametersMatchOrchestratorDefaults(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	params := loginWireParameters(t, s)
+	defaults := orchestrator.DefaultSessionParameters()
+	if len(params) != len(defaults) {
+		t.Fatalf("login returned %d parameters, orchestrator defines %d", len(params), len(defaults))
+	}
+	for i, d := range defaults {
+		if params[i].Name != d.Name {
+			t.Errorf("parameter[%d] = %s, want %s", i, params[i].Name, d.Name)
+		}
 	}
 }
 

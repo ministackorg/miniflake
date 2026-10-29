@@ -489,8 +489,17 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			WarehouseName: warehouse,
 			RoleName:      "SYSADMIN",
 		},
-		Parameters: []nameValueParameter{},
+		Parameters: loginParameters(),
 	})
+}
+
+func loginParameters() []nameValueParameter {
+	defaults := orchestrator.DefaultSessionParameters()
+	out := make([]nameValueParameter, len(defaults))
+	for i, p := range defaults {
+		out[i] = nameValueParameter{Name: p.Name, Value: p.Value}
+	}
+	return out
 }
 
 func (s *Server) handleTokenRefresh(w http.ResponseWriter, r *http.Request) {

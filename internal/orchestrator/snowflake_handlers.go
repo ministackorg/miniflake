@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -474,6 +475,7 @@ var defaultSessionParameters = []snowflakeParameter{
 	{"ABORT_DETACHED_QUERY", "false", "false", "", "abort queries when the client disconnects", "BOOLEAN"},
 	{"AUTOCOMMIT", "true", "true", "", "autocommit mode", "BOOLEAN"},
 	{"BINARY_OUTPUT_FORMAT", "HEX", "HEX", "", "display format for binary", "STRING"},
+	{"CLIENT_RESULT_CHUNK_SIZE", "160", "160", "", "result chunk size in MB", "NUMBER"},
 	{"CLIENT_SESSION_KEEP_ALIVE", "false", "false", "", "keep session alive between requests", "BOOLEAN"},
 	{"CLIENT_SESSION_KEEP_ALIVE_HEARTBEAT_FREQUENCY", "3600", "3600", "", "heartbeat frequency in seconds", "NUMBER"},
 	{"DATE_OUTPUT_FORMAT", "YYYY-MM-DD", "YYYY-MM-DD", "", "display format for date", "STRING"},
@@ -498,6 +500,28 @@ var defaultSessionParameters = []snowflakeParameter{
 	{"TWO_DIGIT_CENTURY_START", "1970", "1970", "", "century start for two-digit years", "NUMBER"},
 	{"UNSUPPORTED_DDL_ACTION", "ignore", "ignore", "", "action on unsupported DDL", "STRING"},
 	{"USE_CACHED_RESULT", "true", "true", "", "reuse cached query results", "BOOLEAN"},
+}
+
+type SessionParameter struct {
+	Name  string
+	Value any
+}
+
+func DefaultSessionParameters() []SessionParameter {
+	out := make([]SessionParameter, 0, len(defaultSessionParameters))
+	for _, p := range defaultSessionParameters {
+		var v any = p.Value
+		switch p.Type {
+		case "BOOLEAN":
+			v = strings.EqualFold(p.Value, "true")
+		case "NUMBER":
+			if n, err := strconv.ParseInt(p.Value, 10, 64); err == nil {
+				v = n
+			}
+		}
+		out = append(out, SessionParameter{Name: p.Key, Value: v})
+	}
+	return out
 }
 
 // defaultAccountParameters are account-level extras returned by

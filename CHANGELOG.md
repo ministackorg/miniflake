@@ -4,6 +4,18 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Login response now returns the default session parameters.** The
+  `/session/v1/login-request` handler returned an empty `parameters` array,
+  so clients that read session parameters from the login response got
+  nothing back; for example, the JDBC driver unboxes `AUTOCOMMIT` as a
+  Boolean and failed without it (#25). The response now carries the same
+  default catalog as `SHOW PARAMETERS`, with native JSON types: booleans as
+  `true`/`false`, numbers as integers and everything else as strings. Also
+  adds the missing `CLIENT_RESULT_CHUNK_SIZE` (160) default.
+
 ## [0.1.5] - 2026-08-10
 
 ### Fixed
