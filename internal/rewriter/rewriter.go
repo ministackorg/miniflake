@@ -450,18 +450,29 @@ func rewriteParseJSON(sql string) string {
 	})
 }
 
-// 20. REGEXP_LIKE(col, pattern) → regexp_matches(col, pattern)
+// 20. REGEXP_LIKE(col, pattern) → regexp_full_match(col, pattern)
+// Snowflake implicitly anchors the pattern at both ends, so 'abc' RLIKE 'b'
+// is FALSE. DuckDB's regexp_matches is a partial match; regexp_full_match
+// has Snowflake's semantics.
 func rewriteRegexpLike(sql string) string {
 	return replaceFuncCall(sql, "REGEXP_LIKE", func(args []string) string {
-		return "regexp_matches(" + strings.Join(args, ", ") + ")"
+		return "regexp_full_match(" + strings.Join(args, ", ") + ")"
 	})
 }
 
-// 20. col RLIKE pattern → regexp_matches(col, pattern)
-var reRlike = regexp.MustCompile(`(?i)\b(\S+)\s+RLIKE\s+(\S+)`)
+// 20. col [NOT] RLIKE|REGEXP pattern → [NOT] regexp_full_match(col, pattern)
+// The pattern operand may be a quoted literal containing spaces.
+var reRlike = regexp.MustCompile(`(?i)(\S+)\s+(NOT\s+)?(?:RLIKE|REGEXP)\s+('(?:[^']|'')*'|\S+)`)
 
 func rewriteRLike(sql string) string {
-	return reRlike.ReplaceAllString(sql, "regexp_matches($1, $2)")
+	return reRlike.ReplaceAllStringFunc(sql, func(m string) string {
+		sub := reRlike.FindStringSubmatch(m)
+		not := ""
+		if sub[2] != "" {
+			not = "NOT "
+		}
+		return not + "regexp_full_match(" + sub[1] + ", " + sub[3] + ")"
+	})
 }
 
 // 21. LISTAGG(col, ',') → STRING_AGG(col, ',')

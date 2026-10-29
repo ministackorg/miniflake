@@ -8,8 +8,16 @@ import (
 	"strings"
 	"sync"
 
-	_ "github.com/marcboeker/go-duckdb"
+	_ "github.com/duckdb/duckdb-go/v2"
 )
+
+// snowflakeEngineConfig is applied as DuckDB global config so every pooled
+// connection behaves like a default Snowflake session:
+//   - TimeZone matches the TIMEZONE session default (America/Los_Angeles)
+//     instead of the host's local zone.
+//   - ieee_floating_point_ops=false makes x / 0 raise "Division by zero" like
+//     Snowflake; DuckDB 2.0 otherwise returns inf.
+const snowflakeEngineConfig = "TimeZone=America%2FLos_Angeles&ieee_floating_point_ops=false"
 
 // Engine is the core SQL execution layer backed by DuckDB.
 // It is safe for concurrent use by multiple goroutines.
@@ -30,7 +38,7 @@ func New(dataDir string) (*Engine, error) {
 	}
 
 	dbPath := dataDir + "/miniflake.duckdb"
-	db, err := sql.Open("duckdb", dbPath)
+	db, err := sql.Open("duckdb", dbPath+"?"+snowflakeEngineConfig)
 	if err != nil {
 		return nil, fmt.Errorf("engine: open duckdb: %w", err)
 	}

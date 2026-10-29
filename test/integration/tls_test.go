@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"testing"
 
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 )
 
 // TestTLSConnectionHTTPS drives the real gosnowflake driver over HTTPS against

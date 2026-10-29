@@ -278,12 +278,27 @@ func TestRewrite(t *testing.T) {
 		{
 			name:   "regexp_like",
 			input:  "SELECT REGEXP_LIKE(col, '^abc') FROM t",
-			expect: "SELECT regexp_matches(col, '^abc') FROM t",
+			expect: "SELECT regexp_full_match(col, '^abc') FROM t",
+		},
+		{
+			name:   "regexp_like with parameters",
+			input:  "SELECT REGEXP_LIKE(col, 'abc', 'i') FROM t",
+			expect: "SELECT regexp_full_match(col, 'abc', 'i') FROM t",
 		},
 		{
 			name:   "rlike operator",
 			input:  "SELECT * FROM t WHERE col RLIKE '^abc'",
-			expect: "SELECT * FROM t WHERE regexp_matches(col, '^abc')",
+			expect: "SELECT * FROM t WHERE regexp_full_match(col, '^abc')",
+		},
+		{
+			name:   "not rlike with spaced pattern",
+			input:  "SELECT * FROM t WHERE col NOT RLIKE 'a b.*'",
+			expect: "SELECT * FROM t WHERE NOT regexp_full_match(col, 'a b.*')",
+		},
+		{
+			name:   "regexp operator",
+			input:  "SELECT * FROM t WHERE col REGEXP 'x+'",
+			expect: "SELECT * FROM t WHERE regexp_full_match(col, 'x+')",
 		},
 
 		// 21. LISTAGG

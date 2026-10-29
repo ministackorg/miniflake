@@ -2,8 +2,10 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -166,5 +168,40 @@ func TestAttachDatabase(t *testing.T) {
 	}
 	if len(tables) != 1 || tables[0] != "events" {
 		t.Fatalf("expected [events], got %v", tables)
+	}
+}
+
+// Every pooled connection must carry the Snowflake session defaults, not just
+// the first one: DuckDB SET is per-connection, the DSN config is global.
+func TestSnowflakeSessionDefaults(t *testing.T) {
+	eng, err := New(tempDir(t))
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	defer eng.Close()
+	ctx := context.Background()
+
+	conns := make([]*sql.Conn, 3)
+	for i := range conns {
+		c, err := eng.db.Conn(ctx)
+		if err != nil {
+			t.Fatalf("conn %d: %v", i, err)
+		}
+		defer c.Close()
+		conns[i] = c
+	}
+	for i, c := range conns {
+		var tz string
+		if err := c.QueryRowContext(ctx, "SELECT current_setting('TimeZone')").Scan(&tz); err != nil {
+			t.Fatalf("conn %d: timezone: %v", i, err)
+		}
+		if tz != "America/Los_Angeles" {
+			t.Errorf("conn %d: TimeZone = %q, want America/Los_Angeles", i, tz)
+		}
+		var v sql.NullFloat64
+		err := c.QueryRowContext(ctx, "SELECT 1 / 0").Scan(&v)
+		if err == nil || !strings.Contains(err.Error(), "Division by zero") {
+			t.Errorf("conn %d: SELECT 1 / 0 = %v, err %v; want Division by zero error", i, v, err)
+		}
 	}
 }

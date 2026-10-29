@@ -30,7 +30,7 @@ import (
 	"github.com/miniflakedb/miniflake/internal/task"
 	"github.com/miniflakedb/miniflake/internal/timetravel"
 	"github.com/miniflakedb/miniflake/internal/udf"
-	sf "github.com/snowflakedb/gosnowflake"
+	sf "github.com/snowflakedb/gosnowflake/v2"
 )
 
 var (
@@ -990,6 +990,61 @@ func TestQualifyClause(t *testing.T) {
 	}
 	if len(out) != 2 || out[0] != (kv{1, 30}) || out[1] != (kv{2, 99}) {
 		t.Errorf("QUALIFY output: %v", out)
+	}
+}
+
+// Snowflake anchors REGEXP_LIKE / RLIKE / REGEXP patterns at both ends:
+// 'abc' RLIKE 'b' is FALSE, 'abc' RLIKE '.*b.*' is TRUE.
+func TestRegexpLikeIsAnchored(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	execSQL(t, db, "DROP TABLE IF EXISTS rlike_t")
+	execSQL(t, db, "CREATE TABLE rlike_t (s VARCHAR)")
+	execSQL(t, db, "INSERT INTO rlike_t VALUES ('abc'), ('b'), ('a b c')")
+
+	cases := []struct {
+		query string
+		want  int
+	}{
+		{"SELECT COUNT(*) FROM rlike_t WHERE s RLIKE 'b'", 1},
+		{"SELECT COUNT(*) FROM rlike_t WHERE s REGEXP '.*b.*'", 3},
+		{"SELECT COUNT(*) FROM rlike_t WHERE s NOT RLIKE 'b'", 2},
+		{"SELECT COUNT(*) FROM rlike_t WHERE REGEXP_LIKE(s, 'a b c')", 1},
+		{"SELECT COUNT(*) FROM rlike_t WHERE REGEXP_LIKE(s, 'ABC', 'i')", 1},
+	}
+	for _, c := range cases {
+		var n int
+		if err := db.QueryRow(c.query).Scan(&n); err != nil {
+			t.Fatalf("%s: %v", c.query, err)
+		}
+		if n != c.want {
+			t.Errorf("%s = %d, want %d", c.query, n, c.want)
+		}
+	}
+}
+
+// Snowflake's / operator reports "Division by zero" instead of returning
+// NULL or inf; DIV0 / DIV0NULL are the non-erroring variants.
+func TestDivisionByZero(t *testing.T) {
+	db := openDB(t)
+	defer db.Close()
+
+	for _, q := range []string{"SELECT 1 / 0", "SELECT 1.5 / 0", "SELECT 1::FLOAT / 0"} {
+		var v sql.NullFloat64
+		err := db.QueryRow(q).Scan(&v)
+		if err == nil || !strings.Contains(err.Error(), "Division by zero") {
+			t.Errorf("%s = %v, err %v; want Division by zero error", q, v, err)
+		}
+	}
+
+	var d0 float64
+	if err := db.QueryRow("SELECT DIV0(1, 0)").Scan(&d0); err != nil || d0 != 0 {
+		t.Errorf("DIV0(1, 0) = %v, err %v; want 0", d0, err)
+	}
+	var dn sql.NullFloat64
+	if err := db.QueryRow("SELECT DIV0NULL(1, 0)").Scan(&dn); err != nil || dn.Valid {
+		t.Errorf("DIV0NULL(1, 0) = %v, err %v; want NULL", dn, err)
 	}
 }
 
