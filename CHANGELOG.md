@@ -4,6 +4,31 @@ All notable changes to MiniFlake are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Bound query parameters.** `bindings` in `/queries/v1/query-request` and the
+  SQL API v2 are now applied, so `?` and `:N` placeholders from JDBC, Python
+  and gosnowflake work instead of failing with "incorrect argument count".
+  Values are substituted as escaped, type-checked literals (TEXT, FIXED, REAL,
+  BOOLEAN, DATE, TIME, TIMESTAMP_*, BINARY, NULL).
+- **Bulk (array) bindings.** Array-valued binds, as sent by JDBC `executeBatch`
+  and gosnowflake `Array(...)`, run the statement once per row. A plain
+  `INSERT ... VALUES (...)` is folded into one multi-row INSERT (atomic); other
+  DML runs row by row and is not atomic. Staged bulk binds (`bindStage`, used
+  by drivers for very large batches) are not supported and now fail with a
+  clear error instead of an "incorrect argument count" from DuckDB.
+
+### Fixed
+- **JDBC `addBatch()` / `executeBatch()` failed with "incorrect argument
+  count".** `describeOnly` requests (sent by JDBC on `addBatch`, `getMetaData`)
+  were executed, with no bind values. They now never run DML/DDL, and queries
+  are described with placeholders set to NULL and no rows returned. Before this
+  a describe of a parameterless INSERT would have inserted the row.
+- **Query responses now carry `statementTypeId` (and `arrayBindSupported` for
+  INSERT).** JDBC rejected `executeBatch` on the old "unknown" type, and
+  gosnowflake reported `RowsAffected() == 0` for every DML statement.
+
 ## [0.2.0] - 2026-10-29
 
 ### Changed
