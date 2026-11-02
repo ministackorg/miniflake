@@ -1348,3 +1348,125 @@ func TestResetEndpoint(t *testing.T) {
 		t.Errorf("got %d want 7", n)
 	}
 }
+
+func TestBoundParameters(t *testing.T) {
+	db := openDB(t)
+
+	execSQL(t, db, "DROP TABLE IF EXISTS bind_test")
+	execSQL(t, db, "CREATE TABLE bind_test (item_id VARCHAR, revision_id INTEGER, note VARCHAR)")
+
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO bind_test VALUES (?, ?, ?)", "1406218", 7, nil); err != nil {
+		t.Fatalf("insert with bindings failed: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO bind_test VALUES (?, ?, 'what?')", "1406218", 8); err != nil {
+		t.Fatalf("insert with bindings failed: %v", err)
+	}
+	if _, err := db.ExecContext(context.Background(), "INSERT INTO bind_test VALUES (?, ?, ?)", "other", 1, "it's"); err != nil {
+		t.Fatalf("insert with bindings failed: %v", err)
+	}
+
+	rows, err := db.QueryContext(context.Background(),
+		"SELECT item_id, revision_id FROM bind_test WHERE item_id = ? ORDER BY revision_id DESC LIMIT ?", "1406218", 1)
+	if err != nil {
+		t.Fatalf("select with bindings failed: %v", err)
+	}
+	defer rows.Close()
+
+	var n int
+	for rows.Next() {
+		var id string
+		var rev int
+		if err := rows.Scan(&id, &rev); err != nil {
+			t.Fatalf("scan failed: %v", err)
+		}
+		if id != "1406218" || rev != 8 {
+			t.Errorf("got (%s, %d), want (1406218, 8)", id, rev)
+		}
+		n++
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 row, got %d", n)
+	}
+
+	var note string
+	if err := db.QueryRowContext(context.Background(), "SELECT note FROM bind_test WHERE item_id = ?", "other").Scan(&note); err != nil {
+		t.Fatalf("select failed: %v", err)
+	}
+	if note != "it's" {
+		t.Errorf("note = %q, want it's", note)
+	}
+}
+
+func bulk(t *testing.T, slice any) any {
+	t.Helper()
+	v, err := sf.Array(slice)
+	if err != nil {
+		t.Fatalf("sf.Array: %v", err)
+	}
+	return v
+}
+
+func TestBulkBindParameters(t *testing.T) {
+	db := openDB(t)
+
+	execSQL(t, db, "DROP TABLE IF EXISTS bulk_bind_test")
+	execSQL(t, db, "CREATE TABLE bulk_bind_test (id INTEGER, name VARCHAR, score DOUBLE)")
+
+	ids := []int{1, 2, 3}
+	names := []string{"alice", "it's bob", "carol"}
+	scores := []float64{1.5, 2.5, 3.5}
+	res, err := db.ExecContext(context.Background(), "INSERT INTO bulk_bind_test VALUES (?, ?, ?)",
+		bulk(t, &ids), bulk(t, &names), bulk(t, &scores))
+	if err != nil {
+		t.Fatalf("bulk insert failed: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 3 {
+		t.Errorf("rows affected = %d, want 3", n)
+	}
+
+	var count int
+	var name string
+	if err := db.QueryRowContext(context.Background(), "SELECT COUNT(*), MAX(name) FROM bulk_bind_test").Scan(&count, &name); err != nil {
+		t.Fatalf("select failed: %v", err)
+	}
+	if count != 3 || name != "it's bob" {
+		t.Errorf("got count=%d max(name)=%q, want 3 and it's bob", count, name)
+	}
+
+	// Non-INSERT statements run once per row.
+	newScores := []float64{10, 20, 30}
+	if _, err := db.ExecContext(context.Background(), "UPDATE bulk_bind_test SET score = ? WHERE id = ?",
+		bulk(t, &newScores), bulk(t, &ids)); err != nil {
+		t.Fatalf("bulk update failed: %v", err)
+	}
+	var sum float64
+	if err := db.QueryRowContext(context.Background(), "SELECT SUM(score) FROM bulk_bind_test").Scan(&sum); err != nil {
+		t.Fatalf("sum failed: %v", err)
+	}
+	if sum != 60 {
+		t.Errorf("sum(score) = %v, want 60", sum)
+	}
+}
+
+func TestDMLReportsRowsAffected(t *testing.T) {
+	db := openDB(t)
+
+	execSQL(t, db, "DROP TABLE IF EXISTS rows_affected_test")
+	execSQL(t, db, "CREATE TABLE rows_affected_test (id INTEGER)")
+
+	res, err := db.ExecContext(context.Background(), "INSERT INTO rows_affected_test VALUES (1), (2), (3)")
+	if err != nil {
+		t.Fatalf("insert failed: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 3 {
+		t.Errorf("insert rows affected = %d, want 3", n)
+	}
+
+	res, err = db.ExecContext(context.Background(), "DELETE FROM rows_affected_test WHERE id > 1")
+	if err != nil {
+		t.Fatalf("delete failed: %v", err)
+	}
+	if n, _ := res.RowsAffected(); n != 2 {
+		t.Errorf("delete rows affected = %d, want 2", n)
+	}
+}

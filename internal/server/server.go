@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/miniflakedb/miniflake/internal/binding"
 	"github.com/miniflakedb/miniflake/internal/orchestrator"
 	"github.com/miniflakedb/miniflake/internal/session"
 )
@@ -216,6 +217,92 @@ func queryFailure(err error, queryID, sqlText string) (code, msg string, data ma
 	return code, msg, data
 }
 
+// isQueryStatement reports whether sql is a read-only statement that is safe
+// to run for describe-only requests.
+func isQueryStatement(sql string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(sql))
+	for _, p := range []string{"SELECT", "WITH", "SHOW", "DESC ", "DESCRIBE", "EXPLAIN", "LIST"} {
+		if strings.HasPrefix(upper, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// Snowflake statement type ids (see the drivers' SFStatementType).
+const (
+	stmtSelect      int64 = 0x1000
+	stmtInsert      int64 = 0x3100
+	stmtUpdate      int64 = 0x3200
+	stmtDelete      int64 = 0x3300
+	stmtMerge       int64 = 0x3400
+	stmtCopy        int64 = 0x3600
+	stmtAlterSess   int64 = 0x4100
+	stmtUse         int64 = 0x4300
+	stmtShow        int64 = 0x4400
+	stmtDescribe    int64 = 0x4500
+	stmtTransaction int64 = 0x5000
+	stmtDDL         int64 = 0x6000
+)
+
+// statementTypeID classifies sql by its leading keyword. Statements it does
+// not recognise return 0 (UNKNOWN), which drivers treat as returning rows.
+func statementTypeID(sql string) int64 {
+	words := strings.Fields(strings.ToUpper(sql))
+	if len(words) == 0 {
+		return 0
+	}
+	first := strings.TrimRight(words[0], ";(")
+	switch first {
+	case "SELECT", "WITH":
+		return stmtSelect
+	case "INSERT":
+		return stmtInsert
+	case "UPDATE":
+		return stmtUpdate
+	case "DELETE":
+		return stmtDelete
+	case "MERGE":
+		return stmtMerge
+	case "COPY":
+		return stmtCopy
+	case "SHOW":
+		return stmtShow
+	case "DESC", "DESCRIBE":
+		return stmtDescribe
+	case "BEGIN", "START", "COMMIT", "ROLLBACK":
+		return stmtTransaction
+	case "CREATE", "DROP", "ALTER", "TRUNCATE", "UNDROP", "COMMENT", "GRANT", "REVOKE":
+		if first == "ALTER" && len(words) > 1 && words[1] == "SESSION" {
+			return stmtAlterSess
+		}
+		return stmtDDL
+	case "USE":
+		if len(words) > 1 {
+			switch words[1] {
+			case "DATABASE":
+				return stmtUse + 1
+			case "SCHEMA":
+				return stmtUse + 2
+			case "WAREHOUSE":
+				return stmtUse + 3
+			}
+		}
+		return stmtUse
+	}
+	return 0
+}
+
+func writeBindFailure(w http.ResponseWriter, queryID, sqlText, msg string) {
+	code := "000008"
+	writeJSON(w, http.StatusOK, snowflakeResponse{
+		Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText},
+		Code:    &code,
+		Message: &msg,
+		Success: false,
+	})
+}
+
 type snowflakeResponse struct {
 	Data    interface{} `json:"data"`
 	Code    *string     `json:"code"`
@@ -246,10 +333,13 @@ type loginResponseData struct {
 }
 
 type queryRequestBody struct {
-	SQLText             string `json:"sqlText"`
-	AsyncExec           bool   `json:"asyncExec"`
-	SequenceID          int    `json:"sequenceId"`
-	QuerySubmissionTime int64  `json:"querySubmissionTime"`
+	SQLText             string                     `json:"sqlText"`
+	AsyncExec           bool                       `json:"asyncExec"`
+	SequenceID          int                        `json:"sequenceId"`
+	QuerySubmissionTime int64                      `json:"querySubmissionTime"`
+	Bindings            map[string]binding.Binding `json:"bindings,omitempty"`
+	BindStage           string                     `json:"bindStage,omitempty"`
+	DescribeOnly        bool                       `json:"describeOnly,omitempty"`
 }
 
 type rowTypeField struct {
@@ -278,6 +368,11 @@ type queryResponseData struct {
 	Total             int             `json:"total"`
 	Returned          int             `json:"returned"`
 	QueryStatus       string          `json:"queryStatus"`
+	// StatementTypeID tells drivers whether a statement is a query, DML or
+	// DDL. JDBC refuses executeBatch/executeUpdate on UNKNOWN (0), and
+	// gosnowflake only reports rows affected for DML ids.
+	StatementTypeID    int64 `json:"statementTypeId"`
+	ArrayBindSupported bool  `json:"arrayBindSupported,omitempty"`
 }
 
 type loginSessionInfo struct {
@@ -595,6 +690,44 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	queryID := generateQueryID()
 	ctx := r.Context()
 
+	if body.BindStage != "" {
+		writeBindFailure(w, queryID, sqlText, "staged array binding (bindStage) is not supported")
+		return
+	}
+
+	// Describe-only requests ask for result metadata and must never run the
+	// statement. Drivers send them without bind values (e.g. on addBatch).
+	execText := sqlText
+	if body.DescribeOnly {
+		if !isQueryStatement(sqlText) {
+			code := "090000"
+			writeJSON(w, http.StatusOK, snowflakeResponse{
+				Data: queryResponseData{
+					QueryID:            queryID,
+					SQLText:            sqlText,
+					QueryResultFormat:  "json",
+					RowType:            []rowTypeField{},
+					RowSet:             [][]interface{}{},
+					QueryStatus:        "SUCCESS",
+					StatementTypeID:    statementTypeID(sqlText),
+					ArrayBindSupported: statementTypeID(sqlText) == stmtInsert,
+				},
+				Code:    &code,
+				Success: true,
+			})
+			return
+		}
+		if len(body.Bindings) == 0 {
+			execText = binding.FillNull(sqlText)
+		}
+	}
+
+	stmts, err := binding.Expand(execText, body.Bindings)
+	if err != nil {
+		writeBindFailure(w, queryID, sqlText, err.Error())
+		return
+	}
+
 	// If orchestrator is wired, route through it.
 	if s.orchestrator != nil {
 		// A non-empty token that doesn't resolve = invalid/expired session.
@@ -615,7 +748,7 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 				Role:      "SYSADMIN",
 			}
 		}
-		result, err := s.orchestrator.ExecuteSQL(ctx, sess, sqlText)
+		result, err := s.executeStatements(ctx, sess, stmts)
 		if err != nil {
 			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
@@ -646,18 +779,23 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rowSet := buildRowSet(result.Rows)
+		if body.DescribeOnly {
+			rowSet = [][]interface{}{}
+		}
 
 		code := "090000"
 		writeJSON(w, http.StatusOK, snowflakeResponse{
 			Data: queryResponseData{
-				QueryID:           queryID,
-				SQLText:           sqlText,
-				QueryResultFormat: "json",
-				RowType:           rowType,
-				RowSet:            rowSet,
-				Total:             len(rowSet),
-				Returned:          len(rowSet),
-				QueryStatus:       "SUCCESS",
+				QueryID:            queryID,
+				SQLText:            sqlText,
+				QueryResultFormat:  "json",
+				RowType:            rowType,
+				RowSet:             rowSet,
+				Total:              len(rowSet),
+				Returned:           len(rowSet),
+				QueryStatus:        "SUCCESS",
+				StatementTypeID:    statementTypeID(sqlText),
+				ArrayBindSupported: statementTypeID(sqlText) == stmtInsert,
 			},
 			Code:    &code,
 			Message: nil,
@@ -667,17 +805,18 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Fallback: direct engine execution (no orchestrator).
+	execSQL := stmts[0]
 	upper := strings.ToUpper(sqlText)
-	isQuery := strings.HasPrefix(upper, "SELECT") ||
+	isQuery := len(stmts) == 1 && (strings.HasPrefix(upper, "SELECT") ||
 		strings.HasPrefix(upper, "SHOW") ||
 		strings.HasPrefix(upper, "DESCRIBE") ||
 		strings.HasPrefix(upper, "DESC") ||
 		strings.HasPrefix(upper, "EXPLAIN") ||
 		strings.HasPrefix(upper, "LIST") ||
-		strings.HasPrefix(upper, "WITH")
+		strings.HasPrefix(upper, "WITH"))
 
 	if isQuery {
-		cols, rows, err := s.engine.Execute(ctx, sqlText)
+		cols, rows, err := s.engine.Execute(ctx, execSQL)
 		if err != nil {
 			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
@@ -708,25 +847,38 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 		}
 
 		rowSet := buildRowSet(rows)
+		if body.DescribeOnly {
+			rowSet = [][]interface{}{}
+		}
 
 		code := "090000"
 		writeJSON(w, http.StatusOK, snowflakeResponse{
 			Data: queryResponseData{
-				QueryID:           queryID,
-				SQLText:           sqlText,
-				QueryResultFormat: "json",
-				RowType:           rowType,
-				RowSet:            rowSet,
-				Total:             len(rowSet),
-				Returned:          len(rowSet),
-				QueryStatus:       "SUCCESS",
+				QueryID:            queryID,
+				SQLText:            sqlText,
+				QueryResultFormat:  "json",
+				RowType:            rowType,
+				RowSet:             rowSet,
+				Total:              len(rowSet),
+				Returned:           len(rowSet),
+				QueryStatus:        "SUCCESS",
+				StatementTypeID:    statementTypeID(sqlText),
+				ArrayBindSupported: statementTypeID(sqlText) == stmtInsert,
 			},
 			Code:    &code,
 			Message: nil,
 			Success: true,
 		})
 	} else {
-		affected, err := s.engine.ExecNoResult(ctx, sqlText)
+		var affected int64
+		var err error
+		for _, stmt := range stmts {
+			var n int64
+			if n, err = s.engine.ExecNoResult(ctx, stmt); err != nil {
+				break
+			}
+			affected += n
+		}
 		if err != nil {
 			code, msg, data := queryFailure(err, queryID, sqlText)
 			writeJSON(w, http.StatusOK, snowflakeResponse{
@@ -741,20 +893,48 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 		code := "090000"
 		writeJSON(w, http.StatusOK, snowflakeResponse{
 			Data: queryResponseData{
-				QueryID:           queryID,
-				SQLText:           sqlText,
-				QueryResultFormat: "json",
-				RowType:           []rowTypeField{{Name: "rows_affected", Type: "fixed", Precision: intPtr(38), Scale: intPtr(0), Nullable: false}},
-				RowSet:            [][]interface{}{{fmt.Sprintf("%d", affected)}},
-				Total:             1,
-				Returned:          1,
-				QueryStatus:       "SUCCESS",
+				QueryID:            queryID,
+				SQLText:            sqlText,
+				QueryResultFormat:  "json",
+				RowType:            []rowTypeField{{Name: "rows_affected", Type: "fixed", Precision: intPtr(38), Scale: intPtr(0), Nullable: false}},
+				RowSet:             [][]interface{}{{fmt.Sprintf("%d", affected)}},
+				Total:              1,
+				Returned:           1,
+				QueryStatus:        "SUCCESS",
+				StatementTypeID:    statementTypeID(sqlText),
+				ArrayBindSupported: statementTypeID(sqlText) == stmtInsert,
 			},
 			Code:    &code,
 			Message: nil,
 			Success: true,
 		})
 	}
+}
+
+// executeStatements runs the statements produced by bulk binding expansion in
+// order and merges DML results into one row count. Execution stops at the
+// first error.
+func (s *Server) executeStatements(ctx context.Context, sess *session.Session, stmts []string) (*orchestrator.QueryResult, error) {
+	if len(stmts) == 1 {
+		return s.orchestrator.ExecuteSQL(ctx, sess, stmts[0])
+	}
+	var total int64
+	var last *orchestrator.QueryResult
+	for _, stmt := range stmts {
+		res, err := s.orchestrator.ExecuteSQL(ctx, sess, stmt)
+		if err != nil {
+			return nil, err
+		}
+		if res.StatementType != "DML" {
+			return nil, fmt.Errorf("array binding is only supported for DML statements")
+		}
+		total += res.RowsAffected
+		last = res
+	}
+	merged := *last
+	merged.RowsAffected = total
+	merged.Rows = [][]interface{}{{total, int64(0), int64(0)}}
+	return &merged, nil
 }
 
 func (s *Server) handleAbortRequest(w http.ResponseWriter, r *http.Request) {
@@ -805,6 +985,8 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 		Schema    string `json:"schema"`
 		Warehouse string `json:"warehouse"`
 		Role      string `json:"role"`
+
+		Bindings map[string]binding.Binding `json:"bindings"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		errorResponse(w, http.StatusBadRequest, "400", "invalid request body")
@@ -819,6 +1001,12 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 
 	queryID := generateQueryID()
 	ctx := r.Context()
+
+	sqlText, bindErr := binding.Substitute(sqlText, body.Bindings)
+	if bindErr != nil {
+		errorResponse(w, http.StatusUnprocessableEntity, "000008", bindErr.Error())
+		return
+	}
 
 	cols, rows, err := s.engine.Execute(ctx, sqlText)
 	if err != nil {

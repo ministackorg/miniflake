@@ -724,3 +724,174 @@ func TestLogin_AcceptsGzippedBody(t *testing.T) {
 		t.Fatalf("login failed on a gzipped body: %#v", body)
 	}
 }
+
+type recordingEngine struct {
+	fakeEngine
+	mu  sync.Mutex
+	sql []string
+}
+
+func (r *recordingEngine) Execute(ctx context.Context, q string, a ...interface{}) ([]string, [][]interface{}, error) {
+	r.mu.Lock()
+	r.sql = append(r.sql, q)
+	r.mu.Unlock()
+	return r.fakeEngine.Execute(ctx, q, a...)
+}
+
+func (r *recordingEngine) ExecNoResult(ctx context.Context, q string, a ...interface{}) (int64, error) {
+	r.mu.Lock()
+	r.sql = append(r.sql, q)
+	r.mu.Unlock()
+	return r.fakeEngine.ExecNoResult(ctx, q, a...)
+}
+
+func TestQuery_BindingsAreSubstituted(t *testing.T) {
+	t.Parallel()
+	eng := &recordingEngine{fakeEngine: fakeEngine{cols: []string{"n"}, rows: [][]interface{}{{int64(1)}}}}
+	s := New(eng, session.NewManager(), "127.0.0.1", 0, t.TempDir())
+
+	body := `{"sqlText":"SELECT n FROM t WHERE id = ? LIMIT ?","bindings":{"1":{"type":"TEXT","value":"1406218"},"2":{"type":"FIXED","value":"1"}}}`
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"success":true`) {
+		t.Fatalf("unexpected response %d: %s", w.Code, w.Body.String())
+	}
+	want := "SELECT n FROM t WHERE id = '1406218' LIMIT 1"
+	if len(eng.sql) != 1 || !strings.Contains(eng.sql[0], want) {
+		t.Errorf("engine got %q, want it to contain %q", eng.sql, want)
+	}
+}
+
+func TestQuery_MissingBindingFails(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, nil)
+
+	body := `{"sqlText":"SELECT ?, ?","bindings":{"1":{"type":"FIXED","value":"1"}}}`
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+
+	if !strings.Contains(w.Body.String(), `"success":false`) || !strings.Contains(w.Body.String(), "bind variable 2 not set") {
+		t.Fatalf("expected bind failure, got %s", w.Body.String())
+	}
+}
+
+func TestQuery_BulkInsertBindingsFoldToOneStatement(t *testing.T) {
+	t.Parallel()
+	eng := &recordingEngine{fakeEngine: fakeEngine{execNoResultAffected: 3}}
+	s := New(eng, session.NewManager(), "127.0.0.1", 0, t.TempDir())
+
+	body := `{"sqlText":"INSERT INTO t VALUES (?, ?)","bindings":{"1":{"type":"FIXED","value":["1","2","3"]},"2":{"type":"TEXT","value":["a","b",null]}}}`
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"success":true`) {
+		t.Fatalf("unexpected response %d: %s", w.Code, w.Body.String())
+	}
+	want := "INSERT INTO t VALUES (1, 'a'), (2, 'b'), (3, NULL)"
+	if len(eng.sql) != 1 || eng.sql[0] != want {
+		t.Errorf("engine got %q, want [%q]", eng.sql, want)
+	}
+}
+
+func TestQuery_BindStageRejectedWithClearError(t *testing.T) {
+	t.Parallel()
+	eng := &recordingEngine{}
+	s := New(eng, session.NewManager(), "127.0.0.1", 0, t.TempDir())
+
+	body := `{"sqlText":"INSERT INTO t VALUES (?, ?)","bindStage":"@SYSTEM$BIND/abc"}`
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+
+	if !strings.Contains(w.Body.String(), `"success":false`) || !strings.Contains(w.Body.String(), "bindStage") {
+		t.Fatalf("expected bindStage failure, got %s", w.Body.String())
+	}
+	if len(eng.sql) != 0 {
+		t.Errorf("engine must not run the statement, got %q", eng.sql)
+	}
+}
+
+func TestStatementTypeID(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		sql  string
+		want int64
+	}{
+		{"SELECT 1", 0x1000},
+		{"  with x as (select 1) select * from x", 0x1000},
+		{"insert into t values (1)", 0x3100},
+		{"UPDATE t SET a = 1", 0x3200},
+		{"DELETE FROM t", 0x3300},
+		{"MERGE INTO t USING s ON 1=1", 0x3400},
+		{"SHOW TABLES", 0x4400},
+		{"DESC TABLE t", 0x4500},
+		{"USE DATABASE d", 0x4301},
+		{"USE SCHEMA s", 0x4302},
+		{"ALTER SESSION SET X=1", 0x4100},
+		{"BEGIN", 0x5000},
+		{"CREATE TABLE t (a INT)", 0x6000},
+		{"DROP TABLE t", 0x6000},
+		{"", 0},
+		{"PUT file:///x @s", 0},
+	}
+	for _, tt := range tests {
+		if got := statementTypeID(tt.sql); got != tt.want {
+			t.Errorf("statementTypeID(%q) = %#x, want %#x", tt.sql, got, tt.want)
+		}
+	}
+}
+
+func queryResponse(t *testing.T, s *Server, body string) map[string]interface{} {
+	t.Helper()
+	r := httptest.NewRequest(http.MethodPost, "/queries/v1/query-request", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	s.handleQueryRequest(w, r)
+	var resp struct {
+		Data    map[string]interface{} `json:"data"`
+		Success bool                   `json:"success"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil || !resp.Success {
+		t.Fatalf("unexpected response (err=%v): %s", err, w.Body.String())
+	}
+	return resp.Data
+}
+
+func TestQuery_DescribeOnlyDoesNotExecuteDML(t *testing.T) {
+	t.Parallel()
+	eng := &recordingEngine{}
+	s := New(eng, session.NewManager(), "127.0.0.1", 0, t.TempDir())
+
+	data := queryResponse(t, s, `{"sqlText":"INSERT INTO t VALUES (?, ?, ?)","describeOnly":true}`)
+
+	if len(eng.sql) != 0 {
+		t.Fatalf("describe-only must not execute DML, engine got %q", eng.sql)
+	}
+	if got := data["statementTypeId"]; got != float64(0x3100) {
+		t.Errorf("statementTypeId = %v, want %d", got, 0x3100)
+	}
+	if data["arrayBindSupported"] != true {
+		t.Errorf("arrayBindSupported = %v, want true for INSERT", data["arrayBindSupported"])
+	}
+}
+
+func TestQuery_DescribeOnlyQueryFillsPlaceholdersAndReturnsNoRows(t *testing.T) {
+	t.Parallel()
+	eng := &recordingEngine{fakeEngine: fakeEngine{cols: []string{"n"}, rows: [][]interface{}{{int64(1)}}}}
+	s := New(eng, session.NewManager(), "127.0.0.1", 0, t.TempDir())
+
+	data := queryResponse(t, s, `{"sqlText":"SELECT n FROM t WHERE id = ? LIMIT ?","describeOnly":true}`)
+
+	if want := "SELECT n FROM t WHERE id = NULL LIMIT NULL"; len(eng.sql) != 1 || eng.sql[0] != want {
+		t.Errorf("engine got %q, want [%q]", eng.sql, want)
+	}
+	if rows, _ := data["rowset"].([]interface{}); len(rows) != 0 {
+		t.Errorf("describe-only must return no rows, got %v", data["rowset"])
+	}
+	if cols, _ := data["rowtype"].([]interface{}); len(cols) != 1 {
+		t.Errorf("rowtype = %v, want 1 column", data["rowtype"])
+	}
+}
