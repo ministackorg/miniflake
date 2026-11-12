@@ -967,63 +967,70 @@ func (s *Server) handleQueryStatus(w http.ResponseWriter, r *http.Request) {
 // SQL API v2
 // ---------------------------------------------------------------------------
 
-func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
-		return
+// The SQL API v2 answers at the top level of the JSON body (ResultSet,
+// QueryFailureStatus, CancelStatus), not inside the session API's
+// {data, code, message, success} envelope. Its handlers write through
+// v2Success / v2Error only; successResponse and errorResponse stay for the
+// session endpoints that gosnowflake, JDBC and Python use.
+// https://docs.snowflake.com/en/developer-guide/sql-api/reference
+
+const (
+	v2CodeSuccess    = "090001"
+	v2SQLStateOK     = "00000"
+	v2MessageSuccess = "Statement executed successfully."
+)
+
+// v2Error is the SQL API error body (QueryFailureStatus). handle is empty for
+// requests rejected before a statement was created (bad method or body).
+type v2Error struct {
+	Code               string `json:"code"`
+	SQLState           string `json:"sqlState,omitempty"`
+	Message            string `json:"message"`
+	StatementHandle    string `json:"statementHandle,omitempty"`
+	StatementStatusURL string `json:"statementStatusUrl,omitempty"`
+	CreatedOn          int64  `json:"createdOn,omitempty"`
+}
+
+func v2StatusURL(handle string) string {
+	return "/api/v2/statements/" + handle
+}
+
+func writeV2Error(w http.ResponseWriter, httpStatus int, code, sqlState, message, handle string) {
+	body := v2Error{Code: code, SQLState: sqlState, Message: message}
+	if handle != "" {
+		body.StatementHandle = handle
+		body.StatementStatusURL = v2StatusURL(handle)
+		body.CreatedOn = time.Now().UnixMilli()
 	}
+	writeJSON(w, httpStatus, body)
+}
 
-	token := extractToken(r)
-	if token != "" {
-		s.sessionMgr.UpdateActivity(token)
+// v2DMLColumn names the row-count column Snowflake returns for DML, and the
+// stats key that carries the same count.
+var v2DMLColumn = map[int64]struct{ column, stat string }{
+	stmtInsert: {"number of rows inserted", "numRowsInserted"},
+	stmtUpdate: {"number of rows updated", "numRowsUpdated"},
+	stmtDelete: {"number of rows deleted", "numRowsDeleted"},
+}
+
+// v2ResultSet builds the ResultSet body for a finished statement. For
+// INSERT/UPDATE/DELETE, DuckDB's single "Count" result becomes Snowflake's
+// "number of rows ..." column plus a stats object.
+func v2ResultSet(handle, sqlText string, cols []string, rows [][]interface{}) map[string]interface{} {
+	body := map[string]interface{}{
+		"code":               v2CodeSuccess,
+		"sqlState":           v2SQLStateOK,
+		"message":            v2MessageSuccess,
+		"statementHandle":    handle,
+		"statementStatusUrl": v2StatusURL(handle),
+		"createdOn":          time.Now().UnixMilli(),
 	}
-
-	var body struct {
-		Statement string `json:"statement"`
-		Timeout   int    `json:"timeout"`
-		Database  string `json:"database"`
-		Schema    string `json:"schema"`
-		Warehouse string `json:"warehouse"`
-		Role      string `json:"role"`
-
-		Bindings map[string]binding.Binding `json:"bindings"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		errorResponse(w, http.StatusBadRequest, "400", "invalid request body")
-		return
-	}
-
-	sqlText := strings.TrimSpace(body.Statement)
-	if sqlText == "" {
-		errorResponse(w, http.StatusBadRequest, "400", "empty statement")
-		return
-	}
-
-	queryID := generateQueryID()
-	ctx := r.Context()
-
-	sqlText, bindErr := binding.Substitute(sqlText, body.Bindings)
-	if bindErr != nil {
-		errorResponse(w, http.StatusUnprocessableEntity, "000008", bindErr.Error())
-		return
-	}
-
-	cols, rows, err := s.engine.Execute(ctx, sqlText)
-	if err != nil {
-		// Try as DML.
-		affected, err2 := s.engine.ExecNoResult(ctx, sqlText)
-		if err2 != nil {
-			errorResponse(w, http.StatusUnprocessableEntity, "002043", err.Error())
-			return
+	if dml, ok := v2DMLColumn[statementTypeID(sqlText)]; ok {
+		if count, ok := singleCount(cols, rows); ok {
+			cols = []string{dml.column}
+			rows = [][]interface{}{{count}}
+			body["stats"] = map[string]int64{dml.stat: count}
 		}
-		successResponse(w, map[string]interface{}{
-			"statementHandle":   queryID,
-			"status":            "SUCCESS",
-			"rowsAffected":      affected,
-			"resultSetMetaData": map[string]interface{}{"numRows": 0, "format": "jsonv2", "rowType": []interface{}{}},
-			"data":              [][]string{},
-		})
-		return
 	}
 
 	rowType := make([]map[string]interface{}, len(cols))
@@ -1044,24 +1051,100 @@ func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	rowSet := make([][]string, len(rows))
+	data := make([][]*string, len(rows))
 	for i, row := range rows {
-		rowSet[i] = make([]string, len(row))
+		data[i] = make([]*string, len(row))
 		for j, cell := range row {
-			rowSet[i][j] = cellToString(cell)
+			if cell == nil {
+				continue // SQL NULL is JSON null in jsonv2
+			}
+			s := cellToString(cell)
+			data[i][j] = &s
 		}
 	}
 
-	successResponse(w, map[string]interface{}{
-		"statementHandle": queryID,
-		"status":          "SUCCESS",
-		"resultSetMetaData": map[string]interface{}{
-			"numRows": len(rowSet),
-			"format":  "jsonv2",
-			"rowType": rowType,
-		},
-		"data": rowSet,
-	})
+	body["resultSetMetaData"] = map[string]interface{}{
+		"numRows":       len(data),
+		"format":        "jsonv2",
+		"rowType":       rowType,
+		"partitionInfo": []map[string]int{{"rowCount": len(data)}},
+	}
+	body["data"] = data
+	return body
+}
+
+// singleCount reports the row count when a result is one row of one integer
+// column, the shape DuckDB returns for DML.
+func singleCount(cols []string, rows [][]interface{}) (int64, bool) {
+	if len(cols) != 1 || len(rows) != 1 || len(rows[0]) != 1 {
+		return 0, false
+	}
+	switch n := rows[0][0].(type) {
+	case int64:
+		return n, true
+	case int32:
+		return int64(n), true
+	case int:
+		return int64(n), true
+	}
+	return 0, false
+}
+
+func (s *Server) handleV2Statements(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeV2Error(w, http.StatusMethodNotAllowed, "405", "", "method not allowed", "")
+		return
+	}
+
+	token := extractToken(r)
+	if token != "" {
+		s.sessionMgr.UpdateActivity(token)
+	}
+
+	var body struct {
+		Statement string `json:"statement"`
+		Timeout   int    `json:"timeout"`
+		Database  string `json:"database"`
+		Schema    string `json:"schema"`
+		Warehouse string `json:"warehouse"`
+		Role      string `json:"role"`
+
+		Bindings map[string]binding.Binding `json:"bindings"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeV2Error(w, http.StatusBadRequest, "400", "", "invalid request body", "")
+		return
+	}
+
+	sqlText := strings.TrimSpace(body.Statement)
+	if sqlText == "" {
+		writeV2Error(w, http.StatusBadRequest, "400", "", "empty statement", "")
+		return
+	}
+
+	queryID := generateQueryID()
+	ctx := r.Context()
+
+	sqlText, bindErr := binding.Substitute(sqlText, body.Bindings)
+	if bindErr != nil {
+		writeV2Error(w, http.StatusUnprocessableEntity, "000008", "", bindErr.Error(), queryID)
+		return
+	}
+
+	cols, rows, err := s.engine.Execute(ctx, sqlText)
+	if err != nil {
+		// Try as DML.
+		affected, err2 := s.engine.ExecNoResult(ctx, sqlText)
+		if err2 != nil {
+			code, msg, data := queryFailure(err, queryID, sqlText)
+			sqlState, _ := data["sqlState"].(string)
+			writeV2Error(w, http.StatusUnprocessableEntity, code, sqlState, msg, queryID)
+			return
+		}
+		cols, rows = []string{"Count"}, [][]interface{}{{affected}}
+	}
+
+	writeJSON(w, http.StatusOK, v2ResultSet(queryID, sqlText, cols, rows))
 }
 
 func (s *Server) handleV2StatementsID(w http.ResponseWriter, r *http.Request) {
@@ -1071,23 +1154,31 @@ func (s *Server) handleV2StatementsID(w http.ResponseWriter, r *http.Request) {
 	handle := parts[0]
 
 	if len(parts) >= 2 && parts[1] == "cancel" {
-		// Cancel endpoint.
-		successResponse(w, map[string]interface{}{
-			"statementHandle": handle,
-			"status":          "ABORTED",
+		// CancelStatus. Statements run synchronously, so there is nothing
+		// left to cancel; answer as Snowflake does for a cancel request.
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"code":               "000604",
+			"sqlState":           "57014",
+			"message":            "SQL execution canceled",
+			"statementHandle":    handle,
+			"statementStatusUrl": v2StatusURL(handle),
 		})
 		return
 	}
 
 	if r.Method != http.MethodGet {
-		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
+		writeV2Error(w, http.StatusMethodNotAllowed, "405", "", "method not allowed", "")
 		return
 	}
 
-	// Poll/fetch — all queries are synchronous, return done.
-	successResponse(w, map[string]interface{}{
-		"statementHandle": handle,
-		"status":          "SUCCESS",
+	// Poll — statements run synchronously, so a handle is always finished.
+	// Results are not kept, so the body has the status fields only.
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"code":               v2CodeSuccess,
+		"sqlState":           v2SQLStateOK,
+		"message":            v2MessageSuccess,
+		"statementHandle":    handle,
+		"statementStatusUrl": v2StatusURL(handle),
 	})
 }
 
