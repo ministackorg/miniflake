@@ -20,6 +20,18 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   clear error instead of an "incorrect argument count" from DuckDB.
 
 ### Fixed
+- **SQL API v2 (`/api/v2/statements`) answered inside the session-API
+  envelope.** Results and errors were wrapped in `{data, code, message,
+  success}`, so SQL API clients found no `resultSetMetaData` or `data` at the
+  top level. Responses now use the SQL API shapes: a `ResultSet` (`code`
+  `090001`, `sqlState`, `statementHandle`, `statementStatusUrl`, `createdOn`,
+  `resultSetMetaData`, `data`), a `QueryFailureStatus` on HTTP 422 (with the
+  mapped Snowflake code and `sqlState`, e.g. division by zero → `100051` /
+  `22012`), and top-level bodies for `GET /api/v2/statements/{handle}` and
+  `/cancel`. INSERT/UPDATE/DELETE report `number of rows inserted|updated|deleted`
+  and a `stats` object instead of DuckDB's `Count` column and `rowsAffected`.
+  SQL `NULL` is now JSON `null` instead of the string `"null"`. The session API
+  (`/queries/v1/...`) is unchanged. (#31)
 - **JDBC `addBatch()` / `executeBatch()` failed with "incorrect argument
   count".** `describeOnly` requests (sent by JDBC on `addBatch`, `getMetaData`)
   were executed, with no bind values. They now never run DML/DDL, and queries
