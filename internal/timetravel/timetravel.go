@@ -89,11 +89,9 @@ func (e *Engine) CaptureSnapshot(db, schema, table string, querier Querier) erro
 	filename := fmt.Sprintf("%d.parquet", now.UnixNano())
 	filePath := filepath.Join(dir, filename)
 
-	// Export table to Parquet using DuckDB's COPY. DuckDB resolves the
-	// table via the engine's current schema (set by SetCurrentSchema after
-	// USE SCHEMA), so an unqualified name is what works here — the
-	// Snowflake-style db/schema only key the snapshot directory.
-	query := fmt.Sprintf("COPY \"%s\" TO '%s' (FORMAT PARQUET)", table, filePath)
+	// Export table to Parquet using DuckDB's COPY. The capture runs outside
+	// the caller's session, so the table is named in full.
+	query := fmt.Sprintf("COPY %s TO '%s' (FORMAT PARQUET)", quotedTableName(db, schema, table), filePath)
 	_, _, err := querier.Execute(context.Background(), query)
 	if err != nil {
 		return fmt.Errorf("timetravel: export snapshot: %w", err)
@@ -219,4 +217,16 @@ func (e *Engine) ListSnapshots(db, schema, table string) []Snapshot {
 		return result[i].Timestamp.Before(result[j].Timestamp)
 	})
 	return result
+}
+
+// quotedTableName is "db"."schema"."table", leaving out empty leading parts.
+func quotedTableName(db, schema, table string) string {
+	q := func(s string) string { return `"` + strings.ReplaceAll(s, `"`, `""`) + `"` }
+	switch {
+	case db != "" && schema != "":
+		return q(db) + "." + q(schema) + "." + q(table)
+	case schema != "":
+		return q(schema) + "." + q(table)
+	}
+	return q(table)
 }

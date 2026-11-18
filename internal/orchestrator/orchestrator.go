@@ -27,7 +27,10 @@ import (
 
 // QueryResult holds the output of an executed SQL statement.
 type QueryResult struct {
-	Columns       []string
+	Columns []string
+	// ColumnTypes holds the DuckDB type name of each column when the engine
+	// reported it (queries); nil otherwise.
+	ColumnTypes   []string
 	Rows          [][]interface{}
 	RowsAffected  int64
 	StatementType string // SELECT, DML, DDL, USE, etc.
@@ -127,6 +130,10 @@ func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sq
 		return &QueryResult{StatementType: "EMPTY"}, nil
 	}
 
+	// Unqualified and two-part names resolve against the session's current
+	// database and schema (Snowflake name resolution), not a process global.
+	ctx = engine.WithSession(ctx, sess.ID, sess.Database, sess.Schema)
+
 	// Step 1: rewrite Snowflake SQL to DuckDB-compatible SQL.
 	rewritten, err := rewriter.Rewrite(sql)
 	if err != nil {
@@ -180,6 +187,13 @@ func (o *Orchestrator) ExecuteSQL(ctx context.Context, sess *session.Session, sq
 	}, nil
 }
 
+// CloseSession releases the engine resources of a logged-out session.
+func (o *Orchestrator) CloseSession(sessionID string) {
+	if o.engine != nil && sessionID != "" {
+		o.engine.CloseSession(sessionID)
+	}
+}
+
 // Execute implements the server.QueryEngine interface for query execution.
 func (o *Orchestrator) Execute(ctx context.Context, sql string, args ...interface{}) ([]string, [][]interface{}, error) {
 	return o.engine.Execute(ctx, sql, args...)
@@ -217,11 +231,16 @@ var (
 )
 
 func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.Session, sql string) (*QueryResult, bool, error) {
+	// CREATE / DROP FUNCTION|PROCEDURE, CALL, SHOW USER FUNCTIONS|PROCEDURES
+	if stmt, ok := rewriter.DecodeRoutineMarker(sql); ok {
+		return o.handleRoutine(ctx, sess, stmt)
+	}
+
 	// USE DATABASE/SCHEMA/WAREHOUSE/ROLE
 	if m := reMarkerUse.FindStringSubmatch(sql); m != nil {
 		kind := strings.ToUpper(m[1])
-		name := strings.Trim(m[2], "\"'` ")
-		return o.handleUse(ctx, sess, kind, name)
+		// Quotes are kept: handleUse splits db.schema before unquoting.
+		return o.handleUse(ctx, sess, kind, m[2])
 	}
 
 	// COPY INTO — route to the copyinto executor. The marker captures the
@@ -353,18 +372,37 @@ func (o *Orchestrator) handleSpecialMarkers(ctx context.Context, sess *session.S
 	return nil, false, nil
 }
 
-func (o *Orchestrator) handleUse(_ context.Context, sess *session.Session, kind, name string) (*QueryResult, bool, error) {
+// ErrObjectNotFound is Snowflake's answer to USE of a database or schema that
+// does not exist (or that the role cannot see).
+func errObjectNotFound() error {
+	return &SnowflakeError{Code: "002043", SQLState: "02000", Message: "Object does not exist, or operation cannot be performed."}
+}
+
+func (o *Orchestrator) handleUse(ctx context.Context, sess *session.Session, kind, name string) (*QueryResult, bool, error) {
 	switch kind {
 	case "DATABASE":
-		sess.Database = name
-		o.engine.SetCurrentDatabase(name)
+		db, ok := o.engine.ResolveDatabase(ctx, cleanIdent(name))
+		if !ok {
+			return nil, true, errObjectNotFound()
+		}
+		o.setCurrentDatabase(ctx, sess, db)
 	case "SCHEMA":
-		sess.Schema = name
-		o.engine.SetCurrentSchema(name)
+		parts := splitIdentParts(name)
+		db, schema := sess.Database, parts[len(parts)-1]
+		if len(parts) == 2 {
+			db = parts[0]
+		} else if len(parts) > 2 {
+			return nil, true, errObjectNotFound()
+		}
+		resolvedDB, resolvedSchema, ok := o.engine.ResolveSchema(ctx, db, schema)
+		if !ok {
+			return nil, true, errObjectNotFound()
+		}
+		sess.Database, sess.Schema = resolvedDB, resolvedSchema
 	case "WAREHOUSE":
-		sess.Warehouse = name
+		sess.Warehouse = cleanIdent(name)
 	case "ROLE":
-		sess.Role = name
+		sess.Role = cleanIdent(name)
 	default:
 		return nil, false, fmt.Errorf("orchestrator: unknown USE kind %q", kind)
 	}
@@ -373,6 +411,39 @@ func (o *Orchestrator) handleUse(_ context.Context, sess *session.Session, kind,
 		Rows:          [][]interface{}{{"Statement executed successfully."}},
 		StatementType: "USE",
 	}, true, nil
+}
+
+// setCurrentDatabase makes db the session's database. Like Snowflake's USE
+// DATABASE, the current schema becomes PUBLIC; databases without one (the
+// built-in miniflake database) fall back to main.
+func (o *Orchestrator) setCurrentDatabase(ctx context.Context, sess *session.Session, db string) {
+	sess.Database = db
+	if _, schema, ok := o.engine.ResolveSchema(ctx, db, "PUBLIC"); ok {
+		sess.Schema = schema
+		return
+	}
+	sess.Schema = engine.DefaultSchema
+}
+
+// splitIdentParts splits a possibly quoted, dot-qualified name into its
+// unquoted parts: `"DB1".SCH1` -> [DB1 SCH1]. Dots inside double quotes do
+// not split.
+func splitIdentParts(name string) []string {
+	var parts []string
+	var cur strings.Builder
+	inQuote := false
+	for _, r := range strings.TrimSpace(strings.TrimRight(strings.TrimSpace(name), ";")) {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+		case r == '.' && !inQuote:
+			parts = append(parts, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	return append(parts, cur.String())
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +469,6 @@ var (
 	reDropPipe        = regexp.MustCompile(`(?i)^DROP\s+PIPE\s+(IF\s+EXISTS\s+)?(\S+)`)
 	reCreateStage     = regexp.MustCompile(`(?i)^CREATE\s+(OR\s+REPLACE\s+)?STAGE\s+(IF\s+NOT\s+EXISTS\s+)?(\S+)`)
 	reDropStage       = regexp.MustCompile(`(?i)^DROP\s+STAGE\s+(IF\s+EXISTS\s+)?(\S+)`)
-	reCreateFunc      = regexp.MustCompile(`(?i)^CREATE\s+(OR\s+REPLACE\s+)?(FUNCTION|PROCEDURE)\s+(\S+)`)
 	reGrant           = regexp.MustCompile(`(?i)^GRANT\s+(\S+)\s+ON\s+(\S+)\s+(\S+)\s+TO\s+ROLE\s+(\S+)`)
 	reRevoke          = regexp.MustCompile(`(?i)^REVOKE\s+(\S+)\s+ON\s+(\S+)\s+(\S+)\s+FROM\s+ROLE\s+(\S+)`)
 	reCreateRole      = regexp.MustCompile(`(?i)^CREATE\s+ROLE\s+(IF\s+NOT\s+EXISTS\s+)?(\S+)`)
@@ -429,7 +499,17 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 			}
 		}
 		// Also create in DuckDB via ATTACH
-		_ = o.engine.AttachDatabase(name)
+		if err := o.engine.AttachDatabase(name); err != nil {
+			return nil, true, err
+		}
+		// Every Snowflake database comes with a PUBLIC schema.
+		if _, err := o.engine.ExecNoResult(ctx, `CREATE SCHEMA IF NOT EXISTS `+quoteIdent(name)+`."PUBLIC"`); err != nil {
+			return nil, true, err
+		}
+		_ = o.catalog.CreateSchema(name, "PUBLIC", sess.Role)
+		// Creating a database makes it the session's current database, with
+		// PUBLIC as the current schema (equivalent to USE DATABASE).
+		o.setCurrentDatabase(ctx, sess, name)
 		return ddlResult(), true, nil
 	}
 
@@ -454,6 +534,13 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 			return nil, true, execErr
 		}
 		_ = o.catalog.CreateSchema(db, name, sess.Role)
+		// Creating a schema makes it the session's current schema
+		// (equivalent to USE SCHEMA).
+		if execErr == nil {
+			if rdb, rschema, ok := o.engine.ResolveSchema(ctx, db, name); ok {
+				sess.Database, sess.Schema = rdb, rschema
+			}
+		}
 		return ddlResult(), true, nil
 	}
 
@@ -644,22 +731,6 @@ func (o *Orchestrator) handleDDL(ctx context.Context, sess *session.Session, sql
 		return ddlResult(), true, nil
 	}
 
-	// CREATE FUNCTION / PROCEDURE
-	if m := reCreateFunc.FindStringSubmatch(sql); m != nil {
-		name := cleanIdent(m[3])
-		err := o.udfReg.Register(&udf.UDF{
-			Name:     name,
-			Database: sess.Database,
-			Schema:   sess.Schema,
-			Language: udf.LangSQL,
-			Body:     sql,
-		})
-		if err != nil {
-			return nil, true, err
-		}
-		return ddlResult(), true, nil
-	}
-
 	// GRANT
 	if m := reGrant.FindStringSubmatch(sql); m != nil {
 		priv := rbac.Privilege(strings.ToUpper(m[1]))
@@ -793,12 +864,13 @@ func (o *Orchestrator) handleQuery(ctx context.Context, sql, upper string) (*Que
 		return nil, false, nil
 	}
 
-	cols, rows, err := o.engine.Execute(ctx, sql)
+	cols, types, rows, err := o.engine.ExecuteTyped(ctx, sql)
 	if err != nil {
 		return nil, true, err
 	}
 	return &QueryResult{
 		Columns:       cols,
+		ColumnTypes:   types,
 		Rows:          rows,
 		StatementType: "SELECT",
 	}, true, nil
@@ -814,6 +886,10 @@ func ddlResult() *QueryResult {
 		Rows:          [][]interface{}{{"Statement executed successfully."}},
 		StatementType: "DDL",
 	}
+}
+
+func quoteIdent(s string) string {
+	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
 // cleanIdent strips quoting characters from an identifier.

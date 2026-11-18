@@ -2,6 +2,8 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -96,18 +98,29 @@ func TestUseDatabaseChangesSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	result, err := orch.ExecuteSQL(ctx, sess, "USE DATABASE my_new_db")
+	if _, err := orch.ExecuteSQL(ctx, sess, "CREATE DATABASE my_new_db"); err != nil {
+		t.Fatalf("CREATE DATABASE: %v", err)
+	}
+	if _, err := orch.ExecuteSQL(ctx, sess, "USE DATABASE miniflake"); err != nil {
+		t.Fatalf("USE DATABASE miniflake: %v", err)
+	}
+	result, err := orch.ExecuteSQL(ctx, sess, "USE DATABASE MY_NEW_DB")
 	if err != nil {
 		t.Fatalf("USE DATABASE: %v", err)
 	}
 	if result.StatementType != "USE" {
 		t.Errorf("expected statement type USE, got %s", result.StatementType)
 	}
-	if sess.Database != "my_new_db" {
-		t.Errorf("expected session database 'my_new_db', got %q", sess.Database)
+	// The stored name is returned, and USE DATABASE selects PUBLIC.
+	if sess.Database != "my_new_db" || sess.Schema != "PUBLIC" {
+		t.Errorf("session = %s.%s, want my_new_db.PUBLIC", sess.Database, sess.Schema)
 	}
-	if orch.engine.CurrentDatabase() != "my_new_db" {
-		t.Errorf("expected engine database 'my_new_db', got %q", orch.engine.CurrentDatabase())
+	got, err := orch.ExecuteSQL(ctx, sess, "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
+	if err != nil {
+		t.Fatalf("SELECT CURRENT_DATABASE(): %v", err)
+	}
+	if fmt.Sprint(got.Rows) != "[[my_new_db PUBLIC]]" {
+		t.Errorf("CURRENT_DATABASE(), CURRENT_SCHEMA() = %v, want [[my_new_db PUBLIC]]", got.Rows)
 	}
 }
 
@@ -116,12 +129,104 @@ func TestUseSchemaChangesSession(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	_, err := orch.ExecuteSQL(ctx, sess, "USE SCHEMA analytics")
-	if err != nil {
+	if _, err := orch.ExecuteSQL(ctx, sess, "CREATE SCHEMA analytics"); err != nil {
+		t.Fatalf("CREATE SCHEMA: %v", err)
+	}
+	if _, err := orch.ExecuteSQL(ctx, sess, "USE SCHEMA main"); err != nil {
+		t.Fatalf("USE SCHEMA main: %v", err)
+	}
+	if _, err := orch.ExecuteSQL(ctx, sess, "USE SCHEMA analytics"); err != nil {
 		t.Fatalf("USE SCHEMA: %v", err)
 	}
 	if sess.Schema != "analytics" {
 		t.Errorf("expected session schema 'analytics', got %q", sess.Schema)
+	}
+}
+
+func TestUseMissingObjectFails(t *testing.T) {
+	orch, sess, cleanup := testOrchestrator(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, stmt := range []string{
+		"USE DATABASE no_such_db",
+		"USE SCHEMA no_such_db.no_such_schema",
+		"USE SCHEMA no_such_schema",
+		"USE no_such_db",
+	} {
+		_, err := orch.ExecuteSQL(ctx, sess, stmt)
+		var sfErr *SnowflakeError
+		if !errors.As(err, &sfErr) || sfErr.SQLState != "02000" {
+			t.Errorf("%s: err = %v, want Snowflake 02000 object-does-not-exist", stmt, err)
+		}
+	}
+	if sess.Database != "miniflake" || sess.Schema != "main" {
+		t.Errorf("failed USE changed the session to %s.%s", sess.Database, sess.Schema)
+	}
+}
+
+// TestUseSchemaResolvesNames is the #33 scenario: after USE SCHEMA, an
+// unqualified CREATE lands in that schema and T1, SCH1.T1 and DB1.SCH1.T1
+// all name the same table.
+func TestUseSchemaResolvesNames(t *testing.T) {
+	orch, sess, cleanup := testOrchestrator(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	for _, stmt := range []string{
+		"CREATE DATABASE DB1",
+		"CREATE SCHEMA DB1.SCH1",
+		"USE DATABASE miniflake",
+		"USE SCHEMA DB1.SCH1",
+		"CREATE TABLE T1 (ID NUMBER, NAME VARCHAR)",
+		"INSERT INTO T1 VALUES (1, 'a')",
+		"CREATE TABLE DB1.PUBLIC.T3 (ID INT)",
+	} {
+		if _, err := orch.ExecuteSQL(ctx, sess, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	for _, q := range []string{"SELECT * FROM T1", "SELECT * FROM SCH1.T1", "SELECT * FROM DB1.SCH1.T1"} {
+		res, err := orch.ExecuteSQL(ctx, sess, q)
+		if err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+		if len(res.Rows) != 1 {
+			t.Errorf("%s: %d rows, want 1", q, len(res.Rows))
+		}
+	}
+	if _, err := orch.ExecuteSQL(ctx, sess, "SELECT * FROM miniflake.main.T1"); err == nil {
+		t.Error("T1 was created in miniflake.main, want DB1.SCH1")
+	}
+	// Another session is unaffected by this one's USE.
+	other := &session.Session{Database: "miniflake", Schema: "main"}
+	res, err := orch.ExecuteSQL(ctx, other, "SELECT CURRENT_DATABASE(), CURRENT_SCHEMA()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(res.Rows) != "[[miniflake main]]" {
+		t.Errorf("other session sees %v, want [[miniflake main]]", res.Rows)
+	}
+}
+
+// CREATE DATABASE / CREATE SCHEMA make the new object current, as in
+// Snowflake.
+func TestCreateSetsCurrentContext(t *testing.T) {
+	orch, sess, cleanup := testOrchestrator(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	if _, err := orch.ExecuteSQL(ctx, sess, "CREATE DATABASE ctx_db"); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Database != "ctx_db" || sess.Schema != "PUBLIC" {
+		t.Errorf("after CREATE DATABASE: %s.%s, want ctx_db.PUBLIC", sess.Database, sess.Schema)
+	}
+	if _, err := orch.ExecuteSQL(ctx, sess, "CREATE SCHEMA ctx_sch"); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Database != "ctx_db" || sess.Schema != "ctx_sch" {
+		t.Errorf("after CREATE SCHEMA: %s.%s, want ctx_db.ctx_sch", sess.Database, sess.Schema)
 	}
 }
 

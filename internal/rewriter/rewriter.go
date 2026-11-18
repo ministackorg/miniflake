@@ -17,6 +17,7 @@ var rules []RewriteRule
 
 func init() {
 	rules = []RewriteRule{
+		rewriteRoutines, // first: routine bodies must reach the orchestrator untouched
 		rewriteUseStatements,
 		rewritePutGet,
 		rewriteCopyInto,
@@ -33,6 +34,7 @@ func init() {
 		rewriteIdentifierFunc,
 		rewriteVariantAccess,
 		rewriteFlatten,
+		rewriteTableFunctionCall,
 		rewriteIFF,
 		rewriteNVL2,
 		rewriteNVL,
@@ -47,6 +49,10 @@ func init() {
 		rewriteRLike,
 		rewriteListAgg,
 		rewriteStrtokToArray,
+		rewriteNiladicDateTime,
+		rewriteConvertTimezone,
+		rewriteTimestampTypes,
+		rewriteToTimestampVariants,
 		rewriteDateAdd,
 		rewriteDateDiff,
 		rewriteToVarchar,
@@ -219,12 +225,25 @@ func replaceFuncCall(sql, funcName string, replacer func(args []string) string) 
 // 18. USE DATABASE/SCHEMA/WAREHOUSE/ROLE → special markers
 var reUse = regexp.MustCompile(`(?i)^\s*USE\s+(DATABASE|SCHEMA|WAREHOUSE|ROLE)\s+(.+)$`)
 
+// reUseBare matches USE <name> with no object keyword. Snowflake reads it as
+// USE DATABASE <name>, or USE SCHEMA <db>.<schema> for a qualified name.
+var reUseBare = regexp.MustCompile(`(?i)^\s*USE\s+("[^"]+"|[A-Za-z_][\w$]*)(\s*\.\s*("[^"]+"|[A-Za-z_][\w$]*))?\s*;?\s*$`)
+
 func rewriteUseStatements(sql string) string {
 	m := reUse.FindStringSubmatch(sql)
 	if m != nil {
 		kind := strings.ToUpper(m[1])
 		name := strings.TrimSpace(strings.TrimRight(m[2], ";"))
 		return fmt.Sprintf("/* MINIFLAKE_USE_%s %s */", kind, name)
+	}
+	if m := reUseBare.FindStringSubmatch(sql); m != nil {
+		if strings.EqualFold(m[1], "SECONDARY") {
+			return sql
+		}
+		if m[3] != "" {
+			return fmt.Sprintf("/* MINIFLAKE_USE_SCHEMA %s.%s */", m[1], m[3])
+		}
+		return fmt.Sprintf("/* MINIFLAKE_USE_DATABASE %s */", m[1])
 	}
 	return sql
 }
@@ -321,20 +340,24 @@ func expandNestedKeys(col, keys string) string {
 	return result
 }
 
+// Only text outside string literals is rewritten: 'HH24:MI' or 'a:b' in a
+// literal is data, not a path.
 func rewriteVariantAccess(sql string) string {
 	// col:key::type → CAST(col->>'key' AS type) (must run before plain access)
-	sql = reVariantCastNested.ReplaceAllStringFunc(sql, func(match string) string {
+	sql = replaceOutsideStrings(sql, reVariantCastNested, func(match string) string {
 		m := reVariantCastNested.FindStringSubmatch(match)
 		expanded := expandNestedKeys(m[1], m[2])
 		return "CAST(" + expanded + " AS " + m[3] + ")"
 	})
 	// col:key → col->>'key'
-	sql = reVariantAccessNested.ReplaceAllStringFunc(sql, func(match string) string {
+	sql = replaceOutsideStrings(sql, reVariantAccessNested, func(match string) string {
 		m := reVariantAccessNested.FindStringSubmatch(match)
 		return expandNestedKeys(m[1], m[2])
 	})
 	// col[0] → col->>0
-	sql = reVariantArrayAccess.ReplaceAllString(sql, "${1}->>${2}")
+	sql = replaceOutsideStrings(sql, reVariantArrayAccess, func(match string) string {
+		return reVariantArrayAccess.ReplaceAllString(match, "${1}->>${2}")
+	})
 	return sql
 }
 
@@ -514,24 +537,24 @@ func rewriteDateDiff(sql string) string {
 	})
 }
 
-// 11. TO_VARCHAR / TO_CHAR → CAST(x AS VARCHAR)
+// 11. TO_VARCHAR / TO_CHAR → CAST(x AS VARCHAR), or strftime when a
+// date/time format is given (TO_VARCHAR(ts, 'YYYY-MM-DD')). Numeric format
+// models ('999.00') are not translated.
 func rewriteToVarchar(sql string) string {
-	sql = replaceFuncCall(sql, "TO_VARCHAR", func(args []string) string {
-		if len(args) < 1 {
-			return "TO_VARCHAR()"
-		}
-		if len(args) == 2 {
-			// TO_VARCHAR(x, fmt) — format is Snowflake-specific, best effort
+	for _, name := range []string{"TO_VARCHAR", "TO_CHAR"} {
+		fn := name
+		sql = replaceFuncCall(sql, fn, func(args []string) string {
+			if len(args) < 1 {
+				return fn + "()"
+			}
+			if len(args) >= 2 {
+				if expr, ok := strftimeExpr(args[0], args[1]); ok {
+					return expr
+				}
+			}
 			return "CAST(" + args[0] + " AS VARCHAR)"
-		}
-		return "CAST(" + args[0] + " AS VARCHAR)"
-	})
-	sql = replaceFuncCall(sql, "TO_CHAR", func(args []string) string {
-		if len(args) < 1 {
-			return "TO_CHAR()"
-		}
-		return "CAST(" + args[0] + " AS VARCHAR)"
-	})
+		})
+	}
 	return sql
 }
 
@@ -548,21 +571,31 @@ func rewriteToNumber(sql string) string {
 	})
 }
 
-// 11. TO_DATE → CAST(x AS DATE)
+// 11. TO_DATE → CAST(x AS DATE); with a format, CAST(strptime(x, fmt) AS DATE)
 func rewriteToDate(sql string) string {
 	return replaceFuncCall(sql, "TO_DATE", func(args []string) string {
 		if len(args) < 1 {
 			return "TO_DATE()"
 		}
+		if len(args) >= 2 {
+			if f, ok := strptimeFormat(args[1]); ok {
+				return "CAST(strptime(" + args[0] + ", " + f + ") AS DATE)"
+			}
+		}
 		return "CAST(" + args[0] + " AS DATE)"
 	})
 }
 
-// 11. TO_TIMESTAMP → CAST(x AS TIMESTAMP)
+// 11. TO_TIMESTAMP → CAST(x AS TIMESTAMP); with a format, strptime(x, fmt)
 func rewriteToTimestamp(sql string) string {
 	return replaceFuncCall(sql, "TO_TIMESTAMP", func(args []string) string {
 		if len(args) < 1 {
 			return "TO_TIMESTAMP()"
+		}
+		if len(args) >= 2 {
+			if f, ok := strptimeFormat(args[1]); ok {
+				return "CAST(strptime(" + args[0] + ", " + f + ") AS TIMESTAMP)"
+			}
 		}
 		return "CAST(" + args[0] + " AS TIMESTAMP)"
 	})
@@ -579,12 +612,8 @@ var dataTypeReplacements = []struct {
 	{regexp.MustCompile(`(?i)\bNUMBER\s*\(\s*(\d+)\s*,\s*(\d+)\s*\)`), "DECIMAL($1, $2)"},
 	// VARIANT → JSON
 	{regexp.MustCompile(`(?i)\bVARIANT\b`), "JSON"},
-	// TIMESTAMP_NTZ → TIMESTAMP
-	{regexp.MustCompile(`(?i)\bTIMESTAMP_NTZ\b`), "TIMESTAMP"},
-	// TIMESTAMP_LTZ → TIMESTAMPTZ
-	{regexp.MustCompile(`(?i)\bTIMESTAMP_LTZ\b`), "TIMESTAMPTZ"},
-	// TIMESTAMP_TZ → TIMESTAMPTZ
-	{regexp.MustCompile(`(?i)\bTIMESTAMP_TZ\b`), "TIMESTAMPTZ"},
+	// TIMESTAMP_NTZ / _LTZ / _TZ are mapped for every statement by
+	// rewriteTimestampTypes.
 	// BINARY → BLOB
 	{regexp.MustCompile(`(?i)\bBINARY\b`), "BLOB"},
 }
