@@ -1,6 +1,6 @@
 <h1 align="center">MiniFlake</h1>
 <p align="center"><strong>Free, open-source local Snowflake emulator.</strong></p>
-<p align="center">Snowflake wire protocol on a single port · gosnowflake / Python / JDBC compatible · DuckDB 2.0 engine · MIT licensed</p>
+<p align="center">Snowflake wire protocol on a single port · gosnowflake / Python / JDBC / Node.js compatible · DuckDB 2.0 engine · MIT licensed</p>
 
 <p align="center">
   <a href="https://github.com/ministackorg/miniflake/actions"><img src="https://img.shields.io/github/actions/workflow/status/ministackorg/miniflake/test.yml?branch=main" alt="Build"></a>
@@ -21,7 +21,7 @@
 
 Local Snowflake is hard. Snowflake's official testing options are either expensive (real account against a paid warehouse) or absent (no `docker run snowflake`). Most teams end up faking it with raw DuckDB or Postgres and writing dialect-conversion layers in their tests.
 
-MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Your application code uses the unmodified `gosnowflake` / `snowflake-connector-python` / JDBC drivers, just pointed at `localhost:8084` instead of `account.snowflakecomputing.com`. The driver does its handshake, the rewriter translates Snowflake SQL to DuckDB SQL, and DuckDB executes — same DSL on both sides means the same query that works locally works against the real warehouse.
+MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Your application code uses the unmodified `gosnowflake` / `snowflake-connector-python` / JDBC / Node.js `snowflake-sdk` drivers, just pointed at `localhost:8084` instead of `account.snowflakecomputing.com`. The driver does its handshake, the rewriter translates Snowflake SQL to DuckDB SQL, and DuckDB executes — same DSL on both sides means the same query that works locally works against the real warehouse.
 
 - **Drop-in for the Snowflake drivers** — gosnowflake, snowflake-connector-python, JDBC, Node.js `snowflake-sdk`. No app code changes, just the endpoint.
 - **DuckDB 2.0 engine** — fast in-process analytics, real query planning, real window functions, real CTEs.
@@ -116,7 +116,7 @@ The first two fields (account/user/password) are not validated — MiniFlake doe
 
 ### HTTP and HTTPS
 
-MiniFlake serves **both plain HTTP and HTTPS on the same port** (`8084`). The examples above use `protocol=http`, which is the simplest path for gosnowflake, the Python connector, and JDBC. Drivers that require TLS — notably the **Snowflake .NET connector**, which has no plain-HTTP mode — connect over HTTPS to the same port with no extra flags.
+MiniFlake serves **both plain HTTP and HTTPS on the same port** (`8084`). The examples above use `protocol=http`, which is the simplest path for gosnowflake, the Python connector, and JDBC (the Node.js `snowflake-sdk` takes an `http://` `accessUrl` instead). Drivers that require TLS — notably the **Snowflake .NET connector**, which has no plain-HTTP mode — connect over HTTPS to the same port with no extra flags.
 
 On first start MiniFlake generates a self-signed certificate and persists it at `<data-dir>/miniflake-cert.pem` (stable across restarts). Strict clients validate the chain, so import that certificate into your OS or runtime trust store once. To use your own certificate instead, pass `--tls-cert` and `--tls-key`.
 

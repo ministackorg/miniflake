@@ -15,8 +15,8 @@ testing** against the Snowflake protocol.
 - The `PUT` / `GET` server-side handlers read from and write to the host
   filesystem. A misconfigured `file://` URL could expose any path the
   miniflake process can read.
-- The `EXECUTE TASK` and `EXECUTE IMMEDIATE` flows run arbitrary SQL
-  against the DuckDB engine in-process — same trust boundary as the
+- `EXECUTE TASK` and `CALL` of a `LANGUAGE SQL` stored procedure run
+  arbitrary SQL against the DuckDB engine in-process — same trust boundary as the
   miniflake binary itself.
 
 ## Reporting a Vulnerability

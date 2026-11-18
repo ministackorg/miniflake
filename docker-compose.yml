@@ -1,6 +1,6 @@
 services:
   miniflake:
-    image: miniflakedb/miniflake:latest
+    image: ghcr.io/ministackorg/miniflake:latest
     build: .
     ports:
       - "8084:8084"

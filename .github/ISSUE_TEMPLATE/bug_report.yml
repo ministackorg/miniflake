@@ -33,7 +33,9 @@ body:
         - Snowpipe REST endpoint (/v1/data/pipes/...)
         - Time travel — AT / BEFORE / UNDROP
         - Cloning (CREATE TABLE ... CLONE)
-        - UDFs (SQL / Python)
+        - SQL UDFs (CREATE/DROP/SHOW FUNCTION)
+        - Stored procedures (CREATE/CALL/DROP/SHOW PROCEDURE, Snowflake Scripting)
+        - USE DATABASE / USE SCHEMA, session context
         - RBAC (roles, grants, privileges)
         - Information Schema views
         - DuckDB engine (query execution, errors, types)
@@ -71,7 +73,7 @@ body:
     id: version
     attributes:
       label: MiniFlake version
-      placeholder: "e.g. v0.2.0 or latest (and the image digest if Docker)"
+      placeholder: "e.g. v0.2.1 or latest (and the image digest if Docker)"
     validations:
       required: true
 
@@ -79,7 +81,7 @@ body:
     id: driver
     attributes:
       label: Driver / tool used
-      placeholder: "e.g. gosnowflake v2.3.0 / snowflake-connector-python 3.7 / snowflake-jdbc 3.16 / DBT / Terraform / direct HTTP"
+      placeholder: "e.g. gosnowflake v2.3.0 / snowflake-connector-python 3.7 / snowflake-jdbc 3.16 / snowflake-sdk (Node.js) 2.4 / DBT / Terraform / direct HTTP"
     validations:
       required: true
 
