@@ -146,7 +146,8 @@ func TestV2Statements_SQLErrorIsQueryFailureStatus(t *testing.T) {
 	tests := []struct {
 		name, engineErr, code, sqlState, message string
 	}{
-		{"generic", "Catalog Error: Table with name nope does not exist!", "002043", "", "Catalog Error: Table with name nope does not exist!"},
+		{"missing table", "Catalog Error: Table with name nope does not exist!", "002003", "42S02", "Catalog Error: Table with name nope does not exist!"},
+		{"generic", "Invalid Input Error: something else", "002043", "42000", "Invalid Input Error: something else"},
 		{"division by zero", "Out of Range Error: Division by zero", "100051", "22012", "Division by zero"},
 	}
 	for _, tt := range tests {

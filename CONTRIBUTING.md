@@ -22,7 +22,8 @@ miniflake/
 │   ├── task/                     # Tasks + cron parser
 │   ├── timetravel/               # Parquet snapshots, AT/BEFORE/UNDROP
 │   ├── clone/                    # CTAS-backed clone
-│   ├── udf/                      # SQL + Python UDFs
+│   ├── udf/                      # CREATE FUNCTION/PROCEDURE parsing + registry
+│   ├── scripting/                # Snowflake Scripting interpreter (procedures)
 │   ├── rbac/                     # GRANT/REVOKE parsing
 │   ├── snowpipe/                 # Pipe metadata + REST insert
 │   ├── copyinto/                 # COPY INTO parser + executor
@@ -204,8 +205,11 @@ CI runs the same commands in `.github/workflows/test.yml`.
   status codes where they're documented. Use code `002043` for generic
   exec failures (matches gosnowflake's `ExecContext` expectation). Specific
   engine errors are mapped to their Snowflake code, SQLSTATE and message in
-  `queryFailure` (`internal/server/server.go`) — e.g. division by zero →
-  `100051` / `22012` / `Division by zero`. Add new mappings there.
+  `engineErrorMappings` (`internal/server/server.go`) — e.g. division by zero →
+  `100051` / `22012` / `Division by zero`. Add new mappings there. Every
+  failure must carry a `sqlState` (drivers treat a missing one as transient).
+  Errors whose Snowflake fields are known at the source return an
+  `*orchestrator.SnowflakeError`, which is sent unchanged.
 - **gofmt + go vet + staticcheck must be clean.**
 
 ---

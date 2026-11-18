@@ -35,12 +35,18 @@ type UDF struct {
 type UDFArg struct {
 	Name string
 	Type string
+	// Default is the DEFAULT expression of an optional argument, "" if none.
+	Default string
 }
 
 // Registry stores and manages UDFs and stored procedures.
 type Registry struct {
 	mu   sync.RWMutex
 	udfs map[string]*UDF // key: db.schema.name(arg_types)
+
+	// routines holds the functions and procedures created through SQL
+	// (CREATE FUNCTION / CREATE PROCEDURE); key: KIND:DB.SCHEMA.NAME(TYPES).
+	routines map[string]*Routine
 }
 
 // NewRegistry creates an empty UDF registry.
@@ -55,6 +61,7 @@ func (r *Registry) Reset() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.udfs = make(map[string]*UDF)
+	r.routines = nil
 }
 
 // makeKey builds the registry key for a UDF.

@@ -115,8 +115,9 @@ func TestSQLAPIv2_SQLError(t *testing.T) {
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422 (body %v)", status, body)
 	}
-	if body["code"] != "002043" {
-		t.Errorf("code = %v, want 002043", body["code"])
+	// Object does not exist or not authorized.
+	if body["code"] != "002003" || body["sqlState"] != "42S02" {
+		t.Errorf("code/sqlState = %v / %v, want 002003 / 42S02", body["code"], body["sqlState"])
 	}
 	if msg, _ := body["message"].(string); !strings.Contains(msg, "sqlapi_v2_no_such_table") {
 		t.Errorf("message = %q, want it to name the table", msg)

@@ -7,6 +7,32 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **SQL UDFs are callable.** `CREATE [OR REPLACE] FUNCTION ... AS $$...$$` /
+  `AS '...'` creates a DuckDB macro in the target database/schema: scalar and
+  `RETURNS TABLE` (called as `TABLE(f(...))`), `DEFAULT` arguments, bodies that
+  are expressions or queries. `DROP FUNCTION name(types)` and `SHOW USER
+  FUNCTIONS` work. Python/JavaScript/Java/Scala functions now fail at `CREATE`
+  with `Unsupported feature` (`000002` / `0A000`) instead of reporting success.
+  (#36)
+- **Stored procedures (`LANGUAGE SQL`).** `CREATE PROCEDURE`, `CALL` (positional,
+  named and `DEFAULT` arguments; one-row result named after the procedure),
+  `DROP PROCEDURE [IF EXISTS]` and `SHOW PROCEDURES`. Bodies run a Snowflake
+  Scripting subset: `DECLARE`, `LET`, `:=`, `IF`/`ELSEIF`/`ELSE`, nested blocks,
+  `SELECT ... INTO :var`, `:var` binds in SQL, `RETURN`, `SQLROWCOUNT` /
+  `SQLFOUND` / `SQLNOTFOUND`. Loops, cursors, exceptions, `RETURNS TABLE` and
+  non-SQL languages fail at `CREATE` with `Unsupported feature`. (#37)
+- **`GET /queries/{queryId}/result`** returns a finished query's stored answer
+  (or its failure), and `/monitoring/queries/{id}` reports status in the
+  `data.queries[]` shape drivers read. Async result fetching works in
+  snowflake-sdk (Node.js) and gosnowflake. (#35)
+- **Date/time SQL.** `CURRENT_TIMESTAMP()`, `CURRENT_TIME()`, `LOCALTIMESTAMP()`,
+  `LOCALTIME()`, `SYSDATE()` (UTC `TIMESTAMP_NTZ`), `GETDATE()`;
+  `CONVERT_TIMEZONE` (2- and 3-argument); `TIMESTAMP_NTZ/LTZ/TZ` in casts;
+  `TO_TIMESTAMP_NTZ/LTZ/TZ`; Snowflake format strings in `TO_CHAR`,
+  `TO_VARCHAR`, `TO_DATE` and `TO_TIMESTAMP`. The 2-argument
+  `CONVERT_TIMEZONE` returns the target wall-clock time as `TIMESTAMP_NTZ`
+  (DuckDB timestamps carry no per-value offset). (#34)
+- `USE <db>` / `USE <db>.<schema>` without the object keyword.
 - **Bound query parameters.** `bindings` in `/queries/v1/query-request` and the
   SQL API v2 are now applied, so `?` and `:N` placeholders from JDBC, Python
   and gosnowflake work instead of failing with "incorrect argument count".
@@ -19,7 +45,34 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   by drivers for very large batches) are not supported and now fail with a
   clear error instead of an "incorrect argument count" from DuckDB.
 
+### Changed
+- **The session's current database and schema are real.** Each session runs on
+  its own DuckDB connection, pointed at its current database/schema, so
+  unqualified and two-part names resolve there and `BEGIN`/`COMMIT` are
+  per-session transactions. `CREATE DATABASE` and `CREATE SCHEMA` make the new
+  object current, and `USE DATABASE` selects `PUBLIC`, as in Snowflake. Every
+  new database gets a `PUBLIC` schema. (#33)
+- **Failures carry a Snowflake error code and `sqlState`.** Missing table →
+  `002003` / `42S02`, unknown function → `002140` / `42601`, syntax error →
+  `001003` / `42000`, invalid identifier → `000904`, conversion → `100038` /
+  `22018`; anything else `002043` / `42000`. (#35)
+- `DATE`, `TIME` and `TIMESTAMP WITH TIME ZONE` result columns are sent as
+  `date` (epoch days), `time` (seconds since midnight) and `timestamp_ltz`
+  instead of `timestamp_ntz`. (#34)
+
 ### Fixed
+- **`USE DATABASE` / `USE SCHEMA` and the login database/schema did not change
+  name resolution**, so objects created after `USE` landed in `miniflake.main`
+  and their fully qualified names failed. `USE` of a database or schema that
+  does not exist now fails with `Object does not exist, or operation cannot be
+  performed.` (`002043` / `02000`). (#33)
+- **Query IDs were not UUID-shaped**, so snowflake-sdk rejected them in
+  `getQueryStatus` / `getResultsFromQueryId`; and engine errors had no
+  `sqlState`, so snowflake-sdk replaced them with "Request to Snowflake
+  failed.". (#35)
+- **`TO_VARCHAR(x, fmt)` / `TO_CHAR(x, fmt)` ignored the format.** (#34)
+- **VARIANT path access rewrote text inside string literals** (`'HH24:MI'`,
+  `'a:b'`).
 - **SQL API v2 (`/api/v2/statements`) answered inside the session-API
   envelope.** Results and errors were wrapped in `{data, code, message,
   success}`, so SQL API clients found no `resultSetMetaData` or `data` at the

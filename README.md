@@ -23,7 +23,7 @@ Local Snowflake is hard. Snowflake's official testing options are either expensi
 
 MiniFlake speaks the **actual Snowflake HTTP wire protocol** on top of DuckDB. Your application code uses the unmodified `gosnowflake` / `snowflake-connector-python` / JDBC drivers, just pointed at `localhost:8084` instead of `account.snowflakecomputing.com`. The driver does its handshake, the rewriter translates Snowflake SQL to DuckDB SQL, and DuckDB executes — same DSL on both sides means the same query that works locally works against the real warehouse.
 
-- **Drop-in for the Snowflake drivers** — gosnowflake, snowflake-connector-python, JDBC. No app code changes, just the endpoint.
+- **Drop-in for the Snowflake drivers** — gosnowflake, snowflake-connector-python, JDBC, Node.js `snowflake-sdk`. No app code changes, just the endpoint.
 - **DuckDB 2.0 engine** — fast in-process analytics, real query planning, real window functions, real CTEs.
 - **Snowflake-specific surface** — `MERGE`, `LATERAL FLATTEN`, `QUALIFY`, `VARIANT`/`OBJECT`/`ARRAY`, `PARSE_JSON`, `OBJECT_CONSTRUCT`, semi-structured access (`col:key`, `col[0]`).
 - **Streams, Tasks, Pipes, Time Travel, UNDROP** — the Snowflake control plane features your DBT/CDC/orchestrator code actually depends on.
@@ -94,6 +94,18 @@ conn = snowflake.connector.connect(
 )
 ```
 
+**Node.js (snowflake-sdk):**
+
+```js
+const snowflake = require('snowflake-sdk');
+
+const conn = snowflake.createConnection({
+  accessUrl: 'http://localhost:8084',
+  account: 'miniflake', username: 'test', password: 'test',
+  database: 'TESTDB', schema: 'PUBLIC',
+});
+```
+
 **JDBC:**
 
 ```
@@ -157,6 +169,7 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | | CTEs, `UNION`, `INTERSECT`, `EXCEPT` | ✅ |
 | | `QUALIFY` clause | ✅ |
 | | `LATERAL FLATTEN(input => arr) AS t` (alias-bound `t.value`) | ✅ |
+| | Date/time: `CURRENT_TIMESTAMP()`, `CURRENT_TIME()`, `SYSDATE()`, `LOCALTIMESTAMP()`; `CONVERT_TIMEZONE` (2- and 3-argument); `::TIMESTAMP_NTZ/LTZ/TZ` and `CAST`; `TO_TIMESTAMP_NTZ/LTZ/TZ`; format strings in `TO_CHAR` / `TO_VARCHAR` / `TO_DATE` / `TO_TIMESTAMP` | ✅ |
 | **DDL/DML** | `CREATE/DROP TABLE`, `VIEW`, `SCHEMA`, `DATABASE` | ✅ |
 | | `INSERT`, `UPDATE`, `DELETE` | ✅ |
 | | `MERGE INTO ... USING ... WHEN MATCHED/NOT MATCHED` (upsert, single-key) | ✅ |
@@ -171,16 +184,21 @@ If a row says ✅, there's a Go file in `test/integration/` that uses `gosnowfla
 | | `REMOVE` / `RM @stage`, with subpath and `PATTERN` filters | ✅ |
 | **Streams & Tasks** | Streams — `CREATE/DROP/SHOW STREAM`, DML change-record hooks | ✅ |
 | | Tasks — `CREATE/DROP/ALTER/SHOW/EXECUTE TASK`, real cron parser, scheduler runs, validates cron timezones | ✅ |
-| **Session** | `SHOW PARAMETERS` (session/account defaults, `LIKE`) | ✅ |
+| **Session** | `USE [DATABASE \| SCHEMA] …` and the login database/schema set where names resolve, per session; `USE` of a missing object fails; `CREATE DATABASE` / `CREATE SCHEMA` switch to the new object | ✅ |
+| | `BEGIN` / `COMMIT` / `ROLLBACK` — one DuckDB connection per session | ✅ |
+| | `SHOW PARAMETERS` (session/account defaults, `LIKE`) | ✅ |
 | **Time Travel** | `UNDROP TABLE` — snapshot on `DROP TABLE`, restored via parquet | ✅ |
 | | `AT (OFFSET => -N)` / `AT (TIMESTAMP => '…')` / `BEFORE (TIMESTAMP => …)` | ✅ |
 | **Cloning** | Table / Schema / Database clone (CTAS-backed) | 🟡 |
 | | Zero-copy snapshots (would need a storage-overlay DuckDB doesn't have) | 🚧 |
-| **UDFs** | SQL UDFs | ✅ |
-| | Python UDFs (subprocess-based) | 🟡 |
-| | JavaScript UDFs (needs the `goja` runtime — opted out for now) | 🚧 |
+| **UDFs** | SQL UDFs — scalar and `RETURNS TABLE`, `DEFAULT` arguments; `CREATE [OR REPLACE] / DROP FUNCTION`, `SHOW USER FUNCTIONS` (run as DuckDB macros) | ✅ |
+| | Overloading a SQL UDF with different argument types | 🚧 |
+| | Python / JavaScript / Java / Scala UDFs — `CREATE FUNCTION` fails with "Unsupported feature" | 🚧 |
+| **Stored procedures** | `LANGUAGE SQL` (Snowflake Scripting: `DECLARE`, `LET`, `:=`, `IF`/`ELSEIF`/`ELSE`, `SELECT … INTO :var`, `:var` binds, `RETURN`, `SQLROWCOUNT`/`SQLFOUND`/`SQLNOTFOUND`); `CALL` with positional, named and `DEFAULT` arguments; `DROP PROCEDURE`, `SHOW PROCEDURES` | ✅ |
+| | Loops, cursors, `RESULTSET`, exceptions, `EXECUTE IMMEDIATE`, `RETURNS TABLE`; JavaScript/Python/Java/Scala procedures — fail at `CREATE` with "Unsupported feature" | 🚧 |
 | **RBAC** | Roles, grants — parsed, not enforced | ✅ |
 | **Snowpipe** | `CREATE/DROP/SHOW PIPE` + REST `/v1/data/pipes/{db}/{schema}/{pipe}/insertFiles` | ✅ |
+| **Wire protocol** | UUID query IDs; `GET /queries/{id}/result` and `GET /monitoring/queries/{id}` (async results, query status); every failure carries a Snowflake code and `sqlState`; `DATE`, `TIME` and `TIMESTAMP_LTZ` columns use their own wire types | ✅ |
 | **Internal** | `GET /_miniflake/health`, `POST /_miniflake/reset` (CI state wipe) | ✅ |
 | **Information Schema** | `TABLES`, `COLUMNS`, `SCHEMATA` views | ✅ |
 
@@ -213,7 +231,7 @@ For each file, the pipe's COPY statement runs against the engine. `{FILE}` in th
 ## Architecture
 
 ```
-Client (gosnowflake / Python / JDBC)
+Client (gosnowflake / Python / JDBC / Node.js)
           |
           v
    +--------------+
@@ -224,7 +242,8 @@ Client (gosnowflake / Python / JDBC)
    +--------------+
    | Orchestrator |  Routes Snowflake-specific syntax (USE, COPY, PUT,
    |              |  GET, LIST, REMOVE, CREATE STREAM/TASK/PIPE,
-   |              |  AT/BEFORE, UNDROP, MERGE) to subsystem engines
+   |              |  AT/BEFORE, UNDROP, MERGE, FUNCTION/PROCEDURE/CALL)
+   |              |  to subsystem engines
    +--------------+
           |
           v
@@ -247,14 +266,15 @@ In-process subsystems (each is a Go package under `internal/`):
 
 | Package | Responsibility |
 |---|---|
-| `engine` | DuckDB connection + query/exec abstractions; Snowflake session defaults (`America/Los_Angeles` time zone, `Division by zero` errors) |
+| `engine` | DuckDB connection + query/exec abstractions; one pinned DuckDB connection per session (current database/schema, transactions); Snowflake session defaults (`America/Los_Angeles` time zone, `Division by zero` errors) |
 | `catalog` | Database/schema/table metadata |
 | `stage` | Filesystem-backed Snowflake stages |
 | `stream` | Table streams (CDC), change records, `SYSTEM$STREAM_HAS_DATA` |
 | `task` | Task scheduler, real cron parser, DAG ordering |
 | `timetravel` | Parquet snapshots, AT/BEFORE/UNDROP resolution |
 | `clone` | CTAS-backed clone |
-| `udf` | SQL + Python UDFs |
+| `udf` | `CREATE FUNCTION` / `CREATE PROCEDURE` parsing; registry of functions and procedures |
+| `scripting` | Snowflake Scripting interpreter for `LANGUAGE SQL` procedures |
 | `rbac` | GRANT/REVOKE parsing |
 | `snowpipe` | Pipe metadata + REST insert |
 | `session` | Auth tokens, session state |

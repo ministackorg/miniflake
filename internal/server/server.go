@@ -3,8 +3,10 @@ package server
 import (
 	"compress/gzip"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -41,6 +43,8 @@ type Server struct {
 	port         int
 	stageDir     string
 
+	results *resultStore
+
 	httpServer *http.Server
 	tlsConfig  *tls.Config
 	certPath   string
@@ -60,6 +64,7 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 		host:       host,
 		port:       port,
 		stageDir:   stageDir,
+		results:    newResultStore(maxStoredResults),
 	}
 	if len(orch) > 0 && orch[0] != nil {
 		s.orchestrator = orch[0]
@@ -75,6 +80,10 @@ func New(engine QueryEngine, sessionMgr *session.Manager, host string, port int,
 	mux.HandleFunc("/queries/v1/query-request", s.handleQueryRequest)
 	mux.HandleFunc("/queries/v1/abort-request", s.handleAbortRequest)
 	mux.HandleFunc("/monitoring/queries/", s.handleQueryStatus)
+	// GET /queries/{queryId}/result — fetch a finished query's result by ID
+	// (getResultsFromQueryId in Node, get_results_from_sfqid in Python,
+	// and the driver's own refresh after a failure without sqlState).
+	mux.HandleFunc("/queries/", s.handleQueryResult)
 
 	// SQL API v2.
 	mux.HandleFunc("/api/v2/statements", s.handleV2Statements)
@@ -204,17 +213,70 @@ func (s *Server) Shutdown(ctx context.Context) error {
 // queryFailure maps an execution error to the Snowflake error code, message
 // and response data for a FAILED_WITH_ERROR query. Errors without a specific
 // Snowflake equivalent fall back to the generic 002043.
+//
+// Every failure carries a sqlState, as Snowflake's do. Drivers depend on it:
+// snowflake-sdk (Node.js) treats a failure without sqlState as possibly
+// transient, refetches it through /queries/{id}/result and replaces the
+// message with "Request to Snowflake failed.".
 func queryFailure(err error, queryID, sqlText string) (code, msg string, data map[string]interface{}) {
-	code, msg = "002043", err.Error()
-	sqlState := ""
-	if strings.Contains(msg, "Division by zero") {
-		code, msg, sqlState = "100051", "Division by zero", "22012"
-	}
-	data = map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText}
-	if sqlState != "" {
-		data["sqlState"] = sqlState
+	code, msg, sqlState := mapEngineError(err)
+	data = map[string]interface{}{
+		"queryId":     queryID,
+		"queryStatus": "FAILED_WITH_ERROR",
+		"sqlText":     sqlText,
+		"sqlState":    sqlState,
 	}
 	return code, msg, data
+}
+
+// engineErrorMappings maps DuckDB error text to the Snowflake error code and
+// SQLSTATE of the matching Snowflake failure. First match wins. The message
+// is kept (it names the object, and DuckDB's "Did you mean" hint is useful),
+// except where Snowflake's own wording is fixed (division by zero).
+var engineErrorMappings = []struct {
+	match          []string // all must be present
+	code, sqlState string
+	message        string // "" keeps the engine's message
+}{
+	{[]string{"Division by zero"}, "100051", "22012", "Division by zero"},
+	{[]string{"Parser Error"}, "001003", "42000", ""},
+	// Object 'X' does not exist or not authorized.
+	{[]string{"Catalog Error", "Table with name", "does not exist"}, "002003", "42S02", ""},
+	{[]string{"Catalog Error", "View with name", "does not exist"}, "002003", "42S02", ""},
+	{[]string{"Catalog Error", "Schema with name", "does not exist"}, "002003", "02000", ""},
+	// Unknown function X / Unknown user-defined function X.
+	{[]string{"Catalog Error", "Function with name", "does not exist"}, "002140", "42601", ""},
+	{[]string{"Catalog Error", "Macro Function with name", "does not exist"}, "002140", "42601", ""},
+	// invalid identifier 'X'
+	{[]string{"Binder Error", "Referenced column", "not found"}, "000904", "42000", ""},
+	{[]string{"Constraint Error", "NOT NULL constraint"}, "100072", "22000", ""},
+	{[]string{"Conversion Error"}, "100038", "22018", ""},
+	{[]string{"Out of Range Error"}, "100046", "22003", ""},
+}
+
+func mapEngineError(err error) (code, msg, sqlState string) {
+	var sfErr *orchestrator.SnowflakeError
+	if errors.As(err, &sfErr) {
+		return sfErr.Code, sfErr.Message, sfErr.SQLState
+	}
+	msg = err.Error()
+	for _, m := range engineErrorMappings {
+		matched := true
+		for _, sub := range m.match {
+			if !strings.Contains(msg, sub) {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			if m.message != "" {
+				msg = m.message
+			}
+			return m.code, msg, m.sqlState
+		}
+	}
+	// Anything else is reported as a generic SQL compilation failure.
+	return "002043", msg, "42000"
 }
 
 // isQueryStatement reports whether sql is a read-only statement that is safe
@@ -293,14 +355,35 @@ func statementTypeID(sql string) int64 {
 	return 0
 }
 
-func writeBindFailure(w http.ResponseWriter, queryID, sqlText, msg string) {
+func (s *Server) writeBindFailure(w http.ResponseWriter, queryID, sqlText, sqlState, msg string) {
 	code := "000008"
-	writeJSON(w, http.StatusOK, snowflakeResponse{
-		Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText},
+	s.writeQueryResponse(w, queryID, snowflakeResponse{
+		Data:    map[string]interface{}{"queryId": queryID, "queryStatus": "FAILED_WITH_ERROR", "sqlText": sqlText, "sqlState": sqlState},
 		Code:    &code,
 		Message: &msg,
 		Success: false,
 	})
+}
+
+// writeQueryFailure answers a failed query-request and keeps the failure so
+// /queries/{id}/result and /monitoring/queries/{id} can report it.
+func (s *Server) writeQueryFailure(w http.ResponseWriter, queryID, sqlText string, err error) {
+	code, msg, data := queryFailure(err, queryID, sqlText)
+	s.writeQueryResponse(w, queryID, snowflakeResponse{
+		Data:    data,
+		Code:    &code,
+		Message: &msg,
+		Success: false,
+	})
+}
+
+// writeQueryResponse writes a query-request answer and stores it under its
+// query ID.
+func (s *Server) writeQueryResponse(w http.ResponseWriter, queryID string, resp snowflakeResponse) {
+	if s.results != nil {
+		s.results.put(queryID, resp)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type snowflakeResponse struct {
@@ -436,13 +519,16 @@ func extractToken(r *http.Request) string {
 	return rest[:end]
 }
 
-// generateQueryID creates a unique query identifier.
+// generateQueryID creates a unique query identifier in the 8-4-4-4-12
+// lowercase-hex UUID layout real Snowflake query IDs use. Drivers validate
+// it: snowflake-sdk (Node.js) rejects any other shape client-side before it
+// calls getQueryStatus or getResultsFromQueryId.
 func generateQueryID() string {
-	// Reuse the session package's UUID format via crypto/rand.
-	return fmt.Sprintf("%016x-%04x-%04x",
-		time.Now().UnixNano(),
-		time.Now().Nanosecond()&0xffff,
-		time.Now().UnixMicro()&0xffff)
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40 // version 4
+	b[8] = (b[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
 // ---------------------------------------------------------------------------
@@ -530,19 +616,7 @@ func cellToString(v interface{}) string {
 // string (cellToString does the per-type formatting); nulls flow through as
 // JSON null so the gosnowflake driver hits its IsNull path correctly.
 func buildRowSet(rows [][]interface{}) [][]interface{} {
-	out := make([][]interface{}, len(rows))
-	for i, row := range rows {
-		outRow := make([]interface{}, len(row))
-		for j, cell := range row {
-			if cell == nil {
-				outRow[j] = nil
-				continue
-			}
-			outRow[j] = cellToString(cell)
-		}
-		out[i] = outRow
-	}
-	return out
+	return buildRowSetTyped(rows, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -659,6 +733,9 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 
 	token := extractToken(r)
 	if token != "" {
+		if sess, ok := s.sessionMgr.GetSession(token); ok && s.orchestrator != nil {
+			s.orchestrator.CloseSession(sess.ID)
+		}
 		s.sessionMgr.DeleteSession(token)
 	}
 	successResponse(w, nil)
@@ -691,7 +768,7 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	if body.BindStage != "" {
-		writeBindFailure(w, queryID, sqlText, "staged array binding (bindStage) is not supported")
+		s.writeBindFailure(w, queryID, sqlText, "0A000", "staged array binding (bindStage) is not supported")
 		return
 	}
 
@@ -701,7 +778,7 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	if body.DescribeOnly {
 		if !isQueryStatement(sqlText) {
 			code := "090000"
-			writeJSON(w, http.StatusOK, snowflakeResponse{
+			s.writeQueryResponse(w, queryID, snowflakeResponse{
 				Data: queryResponseData{
 					QueryID:            queryID,
 					SQLText:            sqlText,
@@ -724,7 +801,7 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 
 	stmts, err := binding.Expand(execText, body.Bindings)
 	if err != nil {
-		writeBindFailure(w, queryID, sqlText, err.Error())
+		s.writeBindFailure(w, queryID, sqlText, "07001", err.Error())
 		return
 	}
 
@@ -750,46 +827,23 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := s.executeStatements(ctx, sess, stmts)
 		if err != nil {
-			code, msg, data := queryFailure(err, queryID, sqlText)
-			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    data,
-				Code:    &code,
-				Message: &msg,
-				Success: false,
-			})
+			s.writeQueryFailure(w, queryID, sqlText, err)
 			return
 		}
 
-		rowType := make([]rowTypeField, len(result.Columns))
-		for i, col := range result.Columns {
-			typeName := "text"
-			if len(result.Rows) > 0 && i < len(result.Rows[0]) {
-				typeName = snowflakeTypeName(result.Rows[0][i])
-			}
-			length, precision, scale, byteLength := snowflakeColumnMetadata(typeName)
-			rowType[i] = rowTypeField{
-				Name:       col,
-				Type:       typeName,
-				Length:     length,
-				Precision:  precision,
-				Scale:      scale,
-				ByteLength: byteLength,
-				Nullable:   true,
-			}
-		}
-
-		rowSet := buildRowSet(result.Rows)
+		wireTypes := wireColumnTypes(result.Columns, result.ColumnTypes, result.Rows)
+		rowSet := buildRowSetTyped(result.Rows, wireTypes)
 		if body.DescribeOnly {
 			rowSet = [][]interface{}{}
 		}
 
 		code := "090000"
-		writeJSON(w, http.StatusOK, snowflakeResponse{
+		s.writeQueryResponse(w, queryID, snowflakeResponse{
 			Data: queryResponseData{
 				QueryID:            queryID,
 				SQLText:            sqlText,
 				QueryResultFormat:  "json",
-				RowType:            rowType,
+				RowType:            buildRowType(result.Columns, wireTypes),
 				RowSet:             rowSet,
 				Total:              len(rowSet),
 				Returned:           len(rowSet),
@@ -818,41 +872,19 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 	if isQuery {
 		cols, rows, err := s.engine.Execute(ctx, execSQL)
 		if err != nil {
-			code, msg, data := queryFailure(err, queryID, sqlText)
-			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    data,
-				Code:    &code,
-				Message: &msg,
-				Success: false,
-			})
+			s.writeQueryFailure(w, queryID, sqlText, err)
 			return
 		}
 
-		rowType := make([]rowTypeField, len(cols))
-		for i, col := range cols {
-			typeName := "text"
-			if len(rows) > 0 && i < len(rows[0]) {
-				typeName = snowflakeTypeName(rows[0][i])
-			}
-			length, precision, scale, byteLength := snowflakeColumnMetadata(typeName)
-			rowType[i] = rowTypeField{
-				Name:       col,
-				Type:       typeName,
-				Length:     length,
-				Precision:  precision,
-				Scale:      scale,
-				ByteLength: byteLength,
-				Nullable:   true,
-			}
-		}
-
-		rowSet := buildRowSet(rows)
+		wireTypes := wireColumnTypes(cols, nil, rows)
+		rowType := buildRowType(cols, wireTypes)
+		rowSet := buildRowSetTyped(rows, wireTypes)
 		if body.DescribeOnly {
 			rowSet = [][]interface{}{}
 		}
 
 		code := "090000"
-		writeJSON(w, http.StatusOK, snowflakeResponse{
+		s.writeQueryResponse(w, queryID, snowflakeResponse{
 			Data: queryResponseData{
 				QueryID:            queryID,
 				SQLText:            sqlText,
@@ -880,18 +912,12 @@ func (s *Server) handleQueryRequest(w http.ResponseWriter, r *http.Request) {
 			affected += n
 		}
 		if err != nil {
-			code, msg, data := queryFailure(err, queryID, sqlText)
-			writeJSON(w, http.StatusOK, snowflakeResponse{
-				Data:    data,
-				Code:    &code,
-				Message: &msg,
-				Success: false,
-			})
+			s.writeQueryFailure(w, queryID, sqlText, err)
 			return
 		}
 
 		code := "090000"
-		writeJSON(w, http.StatusOK, snowflakeResponse{
+		s.writeQueryResponse(w, queryID, snowflakeResponse{
 			Data: queryResponseData{
 				QueryID:            queryID,
 				SQLText:            sqlText,
@@ -956,11 +982,48 @@ func (s *Server) handleQueryStatus(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/monitoring/queries/"), "/")
 	queryID := parts[0]
 
-	// All queries are synchronous, so any queried ID is either done or unknown.
+	// Queries run synchronously, so a query is finished by the time anyone
+	// asks. One we no longer hold (or never ran) reports SUCCESS, as before.
+	entry := queryStatusEntry{ID: queryID, Status: "SUCCESS"}
+	if stored, ok := s.results.get(queryID); ok {
+		entry = stored.status()
+	}
+	// Drivers read data.queries[0] (gosnowflake's checkQueryStatus,
+	// snowflake-sdk's getQueryStatus); queryId/queryStatus stay for clients
+	// of the earlier shape.
 	successResponse(w, map[string]interface{}{
 		"queryId":     queryID,
-		"queryStatus": "SUCCESS",
+		"queryStatus": entry.Status,
+		"queries":     []queryStatusEntry{entry},
 	})
+}
+
+// handleQueryResult implements GET /queries/{queryId}/result: the stored
+// answer of a finished query, in the same envelope query-request returned
+// (rowtype, rowset, ... or the original failure).
+func (s *Server) handleQueryResult(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/queries/"), "/"), "/")
+	if len(parts) != 2 || parts[1] != "result" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		errorResponse(w, http.StatusMethodNotAllowed, "405", "method not allowed")
+		return
+	}
+	queryID := parts[0]
+	stored, ok := s.results.get(queryID)
+	if !ok {
+		code, msg := "000709", fmt.Sprintf("Statement %s not found", queryID)
+		writeJSON(w, http.StatusOK, snowflakeResponse{
+			Data:    map[string]interface{}{"queryId": queryID, "sqlState": "02000"},
+			Code:    &code,
+			Message: &msg,
+			Success: false,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, stored.resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -1224,6 +1287,7 @@ func (s *Server) handleReset(w http.ResponseWriter, r *http.Request) {
 	if s.sessionMgr != nil {
 		s.sessionMgr.Reset()
 	}
+	s.results.reset()
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
