@@ -6,6 +6,8 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-18
+
 ### Added
 - **SQL UDFs are callable.** `CREATE [OR REPLACE] FUNCTION ... AS $$...$$` /
   `AS '...'` creates a DuckDB macro in the target database/schema: scalar and
@@ -349,6 +351,8 @@ gosnowflake driver in `test/integration/`.
   the cutoff is more recent than every snapshot, so the query returns
   "no snapshot at or before". Matches the Snowflake semantic.
 
+[Unreleased]: https://github.com/ministackorg/miniflake/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/ministackorg/miniflake/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/ministackorg/miniflake/compare/v0.1.5...v0.2.0
 [0.1.5]: https://github.com/ministackorg/miniflake/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/ministackorg/miniflake/compare/v0.1.3...v0.1.4

@@ -232,7 +232,7 @@ CI runs the same commands in `.github/workflows/test.yml`.
 
 ## What We're Looking For
 
-High-value contributions right now (state of the project as of v0.2.0):
+High-value contributions right now (state of the project as of v0.2.1):
 
 - **`AT (STATEMENT => 'id')`** — statement-id-keyed time travel; today
   only OFFSET and TIMESTAMP work.
